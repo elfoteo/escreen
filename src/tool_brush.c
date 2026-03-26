@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <math.h>
 #include "escreen.h"
 #include "tools.h"
 
@@ -41,6 +42,17 @@ static void brush_on_mouseup(struct escreen_state *state, double x, double y) {
 	num_points = 0;
 }
 
+static void draw_soft_spot(cairo_t *cr, double cx, double cy, double r, double g, double b, double a, double thickness, double hardness) {
+	cairo_pattern_t *pat = cairo_pattern_create_radial(cx, cy, 0, cx, cy, thickness/2.0);
+	cairo_pattern_add_color_stop_rgba(pat, 0, r, g, b, a);
+	cairo_pattern_add_color_stop_rgba(pat, hardness, r, g, b, a);
+	cairo_pattern_add_color_stop_rgba(pat, 1, r, g, b, 0);
+	cairo_set_source(cr, pat);
+	cairo_arc(cr, cx, cy, thickness/2.0, 0, 2*M_PI);
+	cairo_fill(cr);
+	cairo_pattern_destroy(pat);
+}
+
 static void render_brush_internal(cairo_t *cr, point_t *points, size_t n, double r, double g, double b, double a, double thickness, double hardness) {
 	if (n < 1) return;
 	
@@ -55,18 +67,20 @@ static void render_brush_internal(cairo_t *cr, point_t *points, size_t n, double
 		}
 		cairo_stroke(cr);
 	} else {
-		// Soft brush implementation using radial gradients for each segment or point
-		// For simplicity and performance, we'll draw overlapping circles
-		// A more "perfect" way would be a custom shader, but we are in Cairo.
 		for (size_t i = 0; i < n; i++) {
-			cairo_pattern_t *pat = cairo_pattern_create_radial(points[i].x, points[i].y, 0, points[i].x, points[i].y, thickness/2.0);
-			cairo_pattern_add_color_stop_rgba(pat, 0, r, g, b, a);
-			cairo_pattern_add_color_stop_rgba(pat, hardness, r, g, b, a);
-			cairo_pattern_add_color_stop_rgba(pat, 1, r, g, b, 0);
-			cairo_set_source(cr, pat);
-			cairo_arc(cr, points[i].x, points[i].y, thickness/2.0, 0, 2*M_PI);
-			cairo_fill(cr);
-			cairo_pattern_destroy(pat);
+			if (i > 0) {
+				double dx = points[i].x - points[i-1].x;
+				double dy = points[i].y - points[i-1].y;
+				double dist = sqrt(dx*dx + dy*dy);
+				double step = thickness * 0.1;
+				if (step < 1.0) step = 1.0;
+				for (double d = step; d < dist; d += step) {
+					double cx = points[i-1].x + dx * (d / dist);
+					double cy = points[i-1].y + dy * (d / dist);
+					draw_soft_spot(cr, cx, cy, r, g, b, a, thickness, hardness);
+				}
+			}
+			draw_soft_spot(cr, points[i].x, points[i].y, r, g, b, a, thickness, hardness);
 		}
 	}
 }

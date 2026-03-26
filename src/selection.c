@@ -518,6 +518,23 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
 		seat->state->running = false;
 	} else if (sym == XKB_KEY_c && (xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE))) {
 		if (seat->has_selection) seat->state->running = false;
+	} else if ((sym == XKB_KEY_z || sym == XKB_KEY_Z) && (xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE))) {
+		if (xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE)) {
+			if (seat->state->sketching.history_undo_pos < seat->state->sketching.history_count) {
+				seat->state->sketching.history_undo_pos++;
+				update_dirty_outputs(seat);
+			}
+		} else {
+			if (seat->state->sketching.history_undo_pos > 0) {
+				seat->state->sketching.history_undo_pos--;
+				update_dirty_outputs(seat);
+			}
+		}
+	} else if (sym == XKB_KEY_y && (xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE))) {
+		if (seat->state->sketching.history_undo_pos < seat->state->sketching.history_count) {
+			seat->state->sketching.history_undo_pos++;
+			update_dirty_outputs(seat);
+		}
 	}
 }
 

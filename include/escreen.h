@@ -101,7 +101,11 @@ struct escreen_state {
 		
 		action_t *history;
 		size_t history_count;
+		size_t history_undo_pos;
 		size_t history_capacity;
+		
+		cairo_surface_t *history_layer;
+		size_t history_rendered_count;
 		
 		bool drawing;
 	} sketching;

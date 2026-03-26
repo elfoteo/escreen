@@ -42,9 +42,6 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
     if (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f)
         return;
 
-    cairo_save(cr);
-    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
-
     for (int n = 0; n < draw_data->CmdListsCount; n++) {
         const ImDrawList* cmd_list = draw_data->CmdLists[n];
         const ImDrawVert* vtx_buffer = cmd_list->VtxBuffer.Data;
@@ -73,7 +70,6 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
                     cairo_line_to(cr, v1.pos.x, v1.pos.y);
                     cairo_line_to(cr, v2.pos.x, v2.pos.y);
                     cairo_close_path(cr);
-                    cairo_clip_preserve(cr);
 
                     if (pcmd->GetTexID()) {
                         cairo_surface_t* surface = (cairo_surface_t*)pcmd->GetTexID();
@@ -97,6 +93,7 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
 
                             float matrix_det = matrix.xx * matrix.yy - matrix.xy * matrix.yx;
                             if (fabs(matrix_det) > 1e-6) {
+                                cairo_clip(cr);
                                 cairo_pattern_t* pattern = cairo_pattern_create_for_surface(surface);
                                 cairo_pattern_set_matrix(pattern, &matrix);
                                 cairo_pattern_set_filter(pattern, CAIRO_FILTER_BILINEAR);
@@ -117,7 +114,9 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
                                     float b = ((v0.col >> 16) & 0xFF) / 255.0f;
                                     float a = ((v0.col >> 24) & 0xFF) / 255.0f;
                                     cairo_set_source_rgba(cr, r, g, b, a);
+                                    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
                                     cairo_fill(cr);
+                                    cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
                                 } else {
                                     cairo_pattern_t *mesh = cairo_pattern_create_mesh();
                                     cairo_mesh_pattern_begin_patch(mesh);
@@ -141,7 +140,9 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
                                     cairo_mesh_pattern_end_patch(mesh);
 
                                     cairo_set_source(cr, mesh);
+                                    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
                                     cairo_fill(cr);
+                                    cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
                                     cairo_pattern_destroy(mesh);
                                 }
                             }
@@ -152,7 +153,9 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
                         float b = ((v0.col >> 16) & 0xFF) / 255.0f;
                         float a = ((v0.col >> 24) & 0xFF) / 255.0f;
                         cairo_set_source_rgba(cr, r, g, b, a);
+                        cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
                         cairo_fill(cr);
+                        cairo_set_antialias(cr, CAIRO_ANTIALIAS_DEFAULT);
                     }
                     cairo_restore(cr);
                 }
@@ -160,5 +163,4 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
             }
         }
     }
-    cairo_restore(cr);
 }
