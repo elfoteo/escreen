@@ -42,6 +42,9 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
     if (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f)
         return;
 
+    cairo_save(cr);
+    cairo_set_antialias(cr, CAIRO_ANTIALIAS_NONE);
+
     for (int n = 0; n < draw_data->CmdListsCount; n++) {
         const ImDrawList* cmd_list = draw_data->CmdLists[n];
         const ImDrawVert* vtx_buffer = cmd_list->VtxBuffer.Data;
@@ -157,4 +160,5 @@ void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data) {
             }
         }
     }
+    cairo_restore(cr);
 }

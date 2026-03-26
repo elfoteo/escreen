@@ -57,8 +57,6 @@ void clipboard_send_data(struct escreen_state *state, void *data, size_t size) {
 	zwlr_data_control_source_v1_offer(source, "image/png");
 	zwlr_data_control_device_v1_set_selection(device, source);
 
-	printf("Screenshot copied to clipboard. Keeping process alive until next clipboard event...\n");
-
 	// Fork to background to serve the clipboard
 	pid_t pid = fork();
 	if (pid != 0) {
@@ -75,4 +73,6 @@ void clipboard_send_data(struct escreen_state *state, void *data, size_t size) {
 	zwlr_data_control_source_v1_destroy(source);
 	zwlr_data_control_device_v1_destroy(device);
 	free(ctx.data);
+	
+	printf("Screenshot copied to clipboard.\n");
 }
