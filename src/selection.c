@@ -405,53 +405,77 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 }
 
 static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial,
-		uint32_t time, uint32_t button, uint32_t state) {
+		uint32_t time, uint32_t button, uint32_t state_action) {
 	struct escreen_seat *seat = data;
 	(void)pointer; (void)time;
 	seat->pointer_serial = serial;
-	if (button != BTN_LEFT) return;
 
-	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-		if (seat->selection_status == SELECTION_NOT_STARTED) {
-			seat->anchor_x = seat->x;
-			seat->anchor_y = seat->y;
-			seat->selection_status = SELECTION_DRAGGING;
-			seat->has_selection = true;
-		} else if (seat->has_selection) {
-			// Toolbar hit test MUST come first
-			if (tools_is_on_toolbar(seat->state, seat->x, seat->y)) {
-				tools_handle_button(seat->state, seat->x, seat->y, true);
-				update_dirty_outputs(seat);
-				return;
-			}
-			
-			handle_type_t handle = get_handle_at(seat->state->result, seat->x, seat->y);
-			if (handle != HANDLE_NONE) {
-				seat->selection_status = SELECTION_RESIZING;
-				seat->active_handle = handle;
-			} else if (seat->x >= seat->state->result.x && seat->x < seat->state->result.x + seat->state->result.width &&
-			           seat->y >= seat->state->result.y && seat->y < seat->state->result.y + seat->state->result.height) {
-				if (seat->state->sketching.active_tool == NULL) { // TOOL_SELECT
-					seat->selection_status = SELECTION_MOVING;
-				} else {
+	if (state_action == WL_POINTER_BUTTON_STATE_PRESSED) {
+		if (button == BTN_LEFT) {
+			if (seat->selection_status == SELECTION_NOT_STARTED) {
+				seat->anchor_x = seat->x;
+				seat->anchor_y = seat->y;
+				seat->selection_status = SELECTION_DRAGGING;
+				seat->has_selection = true;
+			} else if (seat->has_selection) {
+				// Toolbar hit test MUST come first
+				if (tools_is_on_toolbar(seat->state, seat->x, seat->y)) {
 					tools_handle_button(seat->state, seat->x, seat->y, true);
+					update_dirty_outputs(seat);
+					return;
 				}
-			} else {
-				// Clicked outside, reset
-				seat->has_selection = false;
-				seat->selection_status = SELECTION_NOT_STARTED;
-				update_dirty_outputs(seat);
+				
+				handle_type_t handle = get_handle_at(seat->state->result, seat->x, seat->y);
+				if (handle != HANDLE_NONE) {
+					seat->selection_status = SELECTION_RESIZING;
+					seat->active_handle = handle;
+				} else if (seat->x >= seat->state->result.x && seat->x < seat->state->result.x + seat->state->result.width &&
+						   seat->y >= seat->state->result.y && seat->y < seat->state->result.y + seat->state->result.height) {
+					if (seat->state->sketching.active_tool == NULL) { // TOOL_SELECT
+						seat->selection_status = SELECTION_MOVING;
+					} else {
+						tools_handle_button(seat->state, seat->x, seat->y, true);
+					}
+				} else {
+					// Clicked outside, reset
+					seat->has_selection = false;
+					seat->selection_status = SELECTION_NOT_STARTED;
+					update_dirty_outputs(seat);
+				}
+			}
+		} else if (button == BTN_RIGHT) {
+			if (seat->has_selection && seat->selection_status != SELECTION_DRAGGING) {
+				// Find nearest corner
+				struct escreen_box b = seat->state->result;
+				double dx0 = seat->x - b.x; double dy0 = seat->y - b.y;
+				double dx1 = seat->x - (b.x + b.width); double dy1 = seat->y - b.y;
+				double dx2 = seat->x - b.x; double dy2 = seat->y - (b.y + b.height);
+				double dx3 = seat->x - (b.x + b.width); double dy3 = seat->y - (b.y + b.height);
+				double dists[4] = { dx0*dx0+dy0*dy0, dx1*dx1+dy1*dy1, dx2*dx2+dy2*dy2, dx3*dx3+dy3*dy3 };
+				double min_dist = dists[0];
+				handle_type_t best = HANDLE_TOP_LEFT;
+				if (dists[1] < min_dist) { min_dist=dists[1]; best=HANDLE_TOP_RIGHT; }
+				if (dists[2] < min_dist) { min_dist=dists[2]; best=HANDLE_BOTTOM_LEFT; }
+				if (dists[3] < min_dist) { min_dist=dists[3]; best=HANDLE_BOTTOM_RIGHT; }
+				
+				seat->selection_status = SELECTION_RESIZING;
+				seat->active_handle = best;
 			}
 		}
 	} else {
-		if (seat->selection_status == SELECTION_DRAGGING || 
-		    seat->selection_status == SELECTION_MOVING || 
-		    seat->selection_status == SELECTION_RESIZING) {
-			seat->selection_status = SELECTION_EDITING;
-			update_dirty_outputs(seat);
-		} else if (seat->selection_status == SELECTION_EDITING) {
-			tools_handle_button(seat->state, seat->x, seat->y, false);
-			update_dirty_outputs(seat);
+		// Released
+		if (button == BTN_LEFT || button == BTN_RIGHT) {
+			if (seat->selection_status == SELECTION_DRAGGING || 
+				seat->selection_status == SELECTION_MOVING || 
+				seat->selection_status == SELECTION_RESIZING) {
+				seat->selection_status = SELECTION_EDITING;
+				update_dirty_outputs(seat);
+			} else if (seat->selection_status == SELECTION_EDITING) {
+				if (button == BTN_LEFT) {
+					tools_handle_button(seat->state, seat->x, seat->y, false);
+					update_dirty_outputs(seat);
+				}
+			}
 		}
 	}
 }

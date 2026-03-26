@@ -39,6 +39,7 @@ void tools_init(struct escreen_state *state) {
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 	ImGuiIO& io = ImGui::GetIO();
+	io.IniFilename = NULL;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 	
 	ImGui_ImplCairo_CreateFontsTexture();
@@ -56,18 +57,56 @@ void tools_cleanup(struct escreen_state *state) {
 static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, double *w, double *h) {
 	*w = 200;
 	*h = 420; 
-	*x = state->result.x - *w - 12;
-	*y = state->result.y;
-	
-	if (*x < state->total_min_x + 4) {
-		*x = state->result.x + state->result.width + 12;
-		if (*x + *w > state->total_max_x - 4) {
-			*x = state->result.x + 12;
-			*y = state->result.y + 12;
+
+	// Find the monitor that contains the center of the selection
+	struct escreen_output *o, *best = NULL;
+	int cx = state->result.x + state->result.width / 2;
+	int cy = state->result.y + state->result.height / 2;
+	wl_list_for_each(o, &state->outputs, link) {
+		if (cx >= o->logical_geometry.x && cx < o->logical_geometry.x + o->logical_geometry.width &&
+			cy >= o->logical_geometry.y && cy < o->logical_geometry.y + o->logical_geometry.height) {
+			best = o;
+			break;
 		}
 	}
-	if (*y + *h > state->total_max_y - 4) *y = state->total_max_y - *h - 4;
-	if (*y < state->total_min_y + 4) *y = state->total_min_y + 4;
+
+	double min_x = best ? best->logical_geometry.x : state->total_min_x;
+	double max_x = best ? best->logical_geometry.x + best->logical_geometry.width : state->total_max_x;
+	double min_y = best ? best->logical_geometry.y : state->total_min_y;
+	double max_y = best ? best->logical_geometry.y + best->logical_geometry.height : state->total_max_y;
+
+	double sx = state->result.x;
+	double sy = state->result.y;
+	double sw = state->result.width;
+	double sh = state->result.height;
+
+	auto check_placement = [&](double px, double py, double *out_x, double *out_y) -> bool {
+		if (py < min_y + 4) py = min_y + 4;
+		if (py + *h > max_y - 4) py = max_y - *h - 4;
+		if (px < min_x + 4) px = min_x + 4;
+		if (px + *w > max_x - 4) px = max_x - *w - 4;
+
+		bool intersect_x = px < sx + sw && px + *w > sx;
+		bool intersect_y = py < sy + sh && py + *h > sy;
+		
+		*out_x = px;
+		*out_y = py;
+		return !(intersect_x && intersect_y);
+	};
+
+	double px, py;
+	if (check_placement(sx - *w - 12, sy + (sh - *h) / 2.0, &px, &py)) { *x = px; *y = py; return; }
+	if (check_placement(sx + sw + 12, sy + (sh - *h) / 2.0, &px, &py)) { *x = px; *y = py; return; }
+	if (check_placement(sx + (sw - *w) / 2.0, sy + sh + 12, &px, &py)) { *x = px; *y = py; return; }
+	if (check_placement(sx + (sw - *w) / 2.0, sy - *h - 12, &px, &py)) { *x = px; *y = py; return; }
+
+	// Fallback if it must intersect
+	*x = sx + 12;
+	*y = sy + 12;
+	if (*x < min_x + 4) *x = min_x + 4;
+	if (*x + *w > max_x - 4) *x = max_x - *w - 4;
+	if (*y < min_y + 4) *y = min_y + 4;
+	if (*y + *h > max_y - 4) *y = max_y - *h - 4;
 }
 
 bool tools_is_on_toolbar(struct escreen_state *state, double x, double y) {
