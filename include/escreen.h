@@ -8,10 +8,23 @@
 #include <cairo.h>
 #include <pixman.h>
 #include <xkbcommon/xkbcommon.h>
+#ifdef __cplusplus
+#define namespace _namespace
+#endif
+
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "wlr-screencopy-unstable-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
 #include "wlr-data-control-unstable-v1-client-protocol.h"
+
+#ifdef __cplusplus
+#undef namespace
+#endif
+#include "tools.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 typedef enum {
 	SELECTION_NOT_STARTED,
@@ -65,6 +78,7 @@ struct escreen_state {
 	bool running;
 	struct escreen_box result;
 	int32_t total_min_x, total_min_y;
+	int32_t total_max_x, total_max_y;
 
 	bool clipboard;
 	bool save_file;
@@ -74,7 +88,28 @@ struct escreen_state {
 
 	struct xkb_context *xkb_context;
 	cairo_surface_t *global_capture;
+
+	// Tools
+	struct {
+		tool_interface_t *tools[TOOL_COUNT];
+		tool_interface_t *active_tool;
+		
+		double r, g, b, a;
+		double thickness;
+		double hardness;
+		bool filled;
+		
+		action_t *history;
+		size_t history_count;
+		size_t history_capacity;
+		
+		bool drawing;
+	} sketching;
 };
+
+#ifdef __cplusplus
+}
+#endif
 
 struct escreen_output {
 	struct wl_output *wl_output;

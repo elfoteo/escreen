@@ -169,6 +169,11 @@ static void render(struct escreen_output *output) {
 			cairo_restore(cr);
 		}
 
+		// Draw sketching tools
+		tools_draw(state, cr);
+		// Draw toolbar/UI for tools
+		tools_draw_ui(state, cr);
+
 		double l_x = (double)state->result.x;
 		double l_y = (double)state->result.y;
 		double l_w = (double)state->result.width;
@@ -331,6 +336,11 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 				}
 				break;
 		}
+		
+		if (tools_is_on_toolbar(state, seat->x, seat->y)) {
+			cname = "default"; // Pointer/Arrow over toolbar
+		}
+		
 		set_cursor(seat, pointer, seat->pointer_serial, cname);
 	}
 
@@ -388,6 +398,9 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 			}
 		}
 		update_dirty_outputs(seat);
+	} else if (seat->selection_status == SELECTION_EDITING) {
+		tools_handle_motion(state, seat->x, seat->y);
+		update_dirty_outputs(seat);
 	}
 }
 
@@ -405,13 +418,24 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 			seat->selection_status = SELECTION_DRAGGING;
 			seat->has_selection = true;
 		} else if (seat->has_selection) {
+			// Toolbar hit test MUST come first
+			if (tools_is_on_toolbar(seat->state, seat->x, seat->y)) {
+				tools_handle_button(seat->state, seat->x, seat->y, true);
+				update_dirty_outputs(seat);
+				return;
+			}
+			
 			handle_type_t handle = get_handle_at(seat->state->result, seat->x, seat->y);
 			if (handle != HANDLE_NONE) {
 				seat->selection_status = SELECTION_RESIZING;
 				seat->active_handle = handle;
 			} else if (seat->x >= seat->state->result.x && seat->x < seat->state->result.x + seat->state->result.width &&
 			           seat->y >= seat->state->result.y && seat->y < seat->state->result.y + seat->state->result.height) {
-				seat->selection_status = SELECTION_MOVING;
+				if (seat->state->sketching.active_tool == NULL) { // TOOL_SELECT
+					seat->selection_status = SELECTION_MOVING;
+				} else {
+					tools_handle_button(seat->state, seat->x, seat->y, true);
+				}
 			} else {
 				// Clicked outside, reset
 				seat->has_selection = false;
@@ -424,6 +448,9 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		    seat->selection_status == SELECTION_MOVING || 
 		    seat->selection_status == SELECTION_RESIZING) {
 			seat->selection_status = SELECTION_EDITING;
+			update_dirty_outputs(seat);
+		} else if (seat->selection_status == SELECTION_EDITING) {
+			tools_handle_button(seat->state, seat->x, seat->y, false);
 			update_dirty_outputs(seat);
 		}
 	}

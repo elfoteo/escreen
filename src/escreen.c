@@ -208,8 +208,10 @@ int main(int argc, char **argv) {
 	}
 
 	state.running = true;
+	tools_init(&state);
 	freeze_run(&state);
 	selection_run(&state);
+	tools_cleanup(&state);
 
 	if (state.result.width > 0 && state.result.height > 0) {
 		crop_and_save(&state);

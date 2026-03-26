@@ -170,6 +170,8 @@ void freeze_run(struct escreen_state *state) {
 
 	state->total_min_x = min_x;
 	state->total_min_y = min_y;
+	state->total_max_x = max_x;
+	state->total_max_y = max_y;
 
 	// Determine the maximum scale across all outputs for high-res stitching
 	int max_scale = 1;
@@ -229,6 +231,13 @@ void crop_and_save(struct escreen_state *state) {
 		(state->total_min_x - state->result.x) * max_scale,
 		(state->total_min_y - state->result.y) * max_scale);
 	cairo_paint(cr);
+
+	// Render sketching tools on the final output
+	cairo_save(cr);
+	cairo_scale(cr, (double)max_scale, (double)max_scale);
+	cairo_translate(cr, -state->result.x, -state->result.y);
+	tools_draw(state, cr);
+	cairo_restore(cr);
 
 	uint32_t *pixels = (uint32_t *)cairo_image_surface_get_data(dest);
 	int stride = cairo_image_surface_get_stride(dest);
