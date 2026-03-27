@@ -226,23 +226,35 @@ void crop_and_save(struct escreen_state *state) {
 	cairo_t *cr = cairo_create(dest);
 	
 	// Composite from the clean global source
-	// Source is at physical pixels (logical * max_scale) starting at total_min_x,y
 	cairo_set_source_surface(cr, source, 
 		(state->total_min_x - state->result.x) * max_scale,
 		(state->total_min_y - state->result.y) * max_scale);
 	cairo_paint(cr);
-
-	// Render sketching tools on the final output
+	
+	// Render sketching tools on the final output by directly executing vector actions
 	cairo_save(cr);
 	cairo_scale(cr, (double)max_scale, (double)max_scale);
 	cairo_translate(cr, -state->result.x, -state->result.y);
-	tools_draw(state, cr);
+	
+	for (size_t i = 0; i < state->sketching.history_undo_pos; i++) {
+		action_t *action = &state->sketching.history[i];
+		if (state->sketching.tools[action->type] && state->sketching.tools[action->type]->render_action) {
+			state->sketching.tools[action->type]->render_action(state, cr, action);
+		}
+	}
+	
+	if (state->sketching.drawing && state->sketching.active_tool && state->sketching.active_tool->draw_preview) {
+		state->sketching.active_tool->draw_preview(state, cr);
+	}
+	
 	cairo_restore(cr);
+
+	cairo_surface_flush(dest);
+	cairo_destroy(cr);
 
 	uint32_t *pixels = (uint32_t *)cairo_image_surface_get_data(dest);
 	int stride = cairo_image_surface_get_stride(dest);
 	image_save(state, pixels, pw, ph, stride);
 
-	cairo_destroy(cr);
 	cairo_surface_destroy(dest);
 }

@@ -264,11 +264,6 @@ void tools_draw(struct escreen_state *state, cairo_t *cr) {
 			cairo_destroy(lcr);
 			state->sketching.history_rendered_count = state->sketching.history_undo_pos;
 		}
-
-		cairo_save(cr);
-		cairo_set_source_surface(cr, state->sketching.history_layer, state->total_min_x, state->total_min_y);
-		cairo_paint(cr);
-		cairo_restore(cr);
 	}
 
 	if (state->sketching.drawing && state->sketching.active_tool) {

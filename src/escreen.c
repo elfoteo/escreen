@@ -211,11 +211,12 @@ int main(int argc, char **argv) {
 	tools_init(&state);
 	freeze_run(&state);
 	selection_run(&state);
-	tools_cleanup(&state);
 
 	if (state.result.width > 0 && state.result.height > 0) {
 		crop_and_save(&state);
 	}
+
+	tools_cleanup(&state);
 
 	if (state.cursor_surface) wl_surface_destroy(state.cursor_surface);
 	if (state.cursor_theme) wl_cursor_theme_destroy(state.cursor_theme);

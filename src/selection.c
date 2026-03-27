@@ -166,6 +166,13 @@ static void render(struct escreen_output *output) {
 			cairo_set_source_surface(cr, global_capture, state->total_min_x, state->total_min_y);
 			cairo_rectangle(cr, state->result.x, state->result.y, state->result.width, state->result.height);
 			cairo_fill(cr);
+			
+			// Exact same behavior for the baked history layer
+			if (state->sketching.history_layer) {
+				cairo_set_source_surface(cr, state->sketching.history_layer, state->total_min_x, state->total_min_y);
+				cairo_rectangle(cr, state->result.x, state->result.y, state->result.width, state->result.height);
+				cairo_fill(cr);
+			}
 			cairo_restore(cr);
 		}
 

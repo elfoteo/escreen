@@ -80,6 +80,10 @@ static void render_blur_internal(struct escreen_state *state, cairo_t *cr, point
 	cairo_scale(scr, (double)sw/w, (double)sh/h);
 	cairo_set_source_surface(scr, state->global_capture, 0, 0);
 	cairo_paint(scr);
+	if (state->sketching.history_layer) {
+		cairo_set_source_surface(scr, state->sketching.history_layer, 0, 0);
+		cairo_paint(scr);
+	}
 	cairo_destroy(scr);
 	
 	// Draw blurred back onto cr using mask
