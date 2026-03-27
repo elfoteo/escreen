@@ -4,6 +4,8 @@
 #include <time.h>
 #include <png.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include "escreen.h"
 
 struct png_buffer {
@@ -20,6 +22,16 @@ static void png_write_fn(png_structp png, png_bytep data, png_size_t length) {
 
 static void png_flush_fn(png_structp png) {
 	(void)png;
+}
+
+static void format_filename(struct escreen_state *state, char *buf, size_t size) {
+	time_t now = time(NULL);
+	struct tm *t = localtime(&now);
+	
+	char name[256];
+	strftime(name, sizeof(name), state->config.auto_save_filename_format, t);
+	snprintf(buf, size, "%s/%s.%s", 
+		state->config.auto_save_path, name, state->config.auto_save_format);
 }
 
 void image_save(struct escreen_state *state, void *data, int32_t width, int32_t height, int32_t stride) {
@@ -50,21 +62,43 @@ void image_save(struct escreen_state *state, void *data, int32_t width, int32_t 
 	png_write_end(png, NULL);
 	png_destroy_write_struct(&png, &info);
 
-	if (state->clipboard) {
-		clipboard_send_data(state, pb.data, pb.size);
+	if (state->config.auto_save_enabled) {
+		// Ensure directory exists
+		mkdir(state->config.auto_save_path, 0755);
+
+		char filename[512];
+		format_filename(state, filename, sizeof(filename));
+		
+		FILE *fp = fopen(filename, "wb");
+		if (fp) {
+			fwrite(pb.data, 1, pb.size, fp);
+			fclose(fp);
+			printf("Screenshot auto-saved to %s\n", filename);
+		} else {
+			perror("auto-save fopen failed");
+		}
 	}
 	
 	if (state->save_file) {
-		char filename[256];
-		snprintf(filename, sizeof(filename), "escreen-%ld.png", time(NULL));
+		char filename[512];
+		if (state->manual_save_path) {
+			strncpy(filename, state->manual_save_path, sizeof(filename));
+		} else {
+			snprintf(filename, sizeof(filename), "escreen-%ld.png", time(NULL));
+		}
+
 		FILE *fp = fopen(filename, "wb");
 		if (fp) {
 			fwrite(pb.data, 1, pb.size, fp);
 			fclose(fp);
 			printf("Screenshot saved to %s\n", filename);
 		} else {
-			perror("fopen failed");
+			perror("manual save fopen failed");
 		}
+	}
+
+	if (state->clipboard) {
+		clipboard_send_data(state, pb.data, pb.size);
 	}
 	
 	free(pb.data);

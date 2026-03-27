@@ -17,6 +17,7 @@ typedef enum {
 	TOOL_BLUR,
 	TOOL_LINE,
 	TOOL_RECTANGLE,
+	TOOL_ARROW,
 	TOOL_COUNT
 } tool_type_t;
 
@@ -42,9 +43,15 @@ struct tool {
 	const char *name;
 	tool_type_t type;
 	
+	bool show_color;
+	bool show_thickness;
+	bool show_hardness;
+	bool show_fill;
+	
 	void (*on_mousedown)(struct escreen_state *state, double x, double y);
 	void (*on_mousemove)(struct escreen_state *state, double x, double y);
 	void (*on_mouseup)(struct escreen_state *state, double x, double y);
+	void (*on_draw_preview)(struct escreen_state *state, cairo_t *cr, double x, double y);
 	
 	// Draw the currently active (in-progress) action
 	void (*draw_preview)(struct escreen_state *state, cairo_t *cr);

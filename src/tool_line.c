@@ -50,12 +50,26 @@ static void line_render_action(struct escreen_state *state, cairo_t *cr, action_
 	cairo_stroke(cr);
 }
 
+static void line_on_draw_preview(struct escreen_state *state, cairo_t *cr, double x, double y) {
+	cairo_save(cr);
+	cairo_set_source_rgba(cr, state->sketching.r, state->sketching.g, state->sketching.b, state->sketching.a);
+	cairo_set_line_width(cr, 1.0);
+	cairo_arc(cr, x, y, state->sketching.thickness / 2.0, 0, 6.28318530718);
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
 tool_interface_t tool_line = {
 	.name = "Line",
 	.type = TOOL_LINE,
+	.show_color = true,
+	.show_thickness = true,
+	.show_hardness = false,
+	.show_fill = false,
 	.on_mousedown = line_on_mousedown,
 	.on_mousemove = line_on_mousemove,
 	.on_mouseup = line_on_mouseup,
 	.draw_preview = line_draw_preview,
 	.render_action = line_render_action,
+	.on_draw_preview = line_on_draw_preview,
 };

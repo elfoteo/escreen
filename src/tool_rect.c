@@ -65,9 +65,14 @@ static void rect_render_action(struct escreen_state *state, cairo_t *cr, action_
 tool_interface_t tool_rectangle = {
 	.name = "Rectangle",
 	.type = TOOL_RECTANGLE,
+	.show_color = true,
+	.show_thickness = true,
+	.show_hardness = false,
+	.show_fill = true,
 	.on_mousedown = rect_on_mousedown,
 	.on_mousemove = rect_on_mousemove,
 	.on_mouseup = rect_on_mouseup,
 	.draw_preview = rect_draw_preview,
 	.render_action = rect_render_action,
+	.on_draw_preview = NULL,
 };

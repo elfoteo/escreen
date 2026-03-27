@@ -110,12 +110,26 @@ static void blur_render_action(struct escreen_state *state, cairo_t *cr, action_
 	render_blur_internal(state, cr, action->points, action->num_points, action->thickness, action->hardness);
 }
 
+static void blur_on_draw_preview(struct escreen_state *state, cairo_t *cr, double x, double y) {
+	cairo_save(cr);
+	cairo_set_source_rgba(cr, 0.5, 0.5, 0.5, 0.5);
+	cairo_set_line_width(cr, 1.0);
+	cairo_arc(cr, x, y, state->sketching.thickness / 2.0, 0, 6.28318530718);
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
 tool_interface_t tool_blur = {
 	.name = "Blur",
 	.type = TOOL_BLUR,
+	.show_color = false,
+	.show_thickness = true,
+	.show_hardness = true,
+	.show_fill = false,
 	.on_mousedown = blur_on_mousedown,
 	.on_mousemove = blur_on_mousemove,
 	.on_mouseup = blur_on_mouseup,
 	.draw_preview = blur_draw_preview,
 	.render_action = blur_render_action,
+	.on_draw_preview = blur_on_draw_preview,
 };

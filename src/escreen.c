@@ -144,6 +144,15 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = (void*)noop,
 };
 
+static void usage(const char *name) {
+	fprintf(stderr, "Usage: %s [options]\n", name);
+	fprintf(stderr, "Options:\n");
+	fprintf(stderr, "  -c          Copy screenshot to clipboard (default)\n");
+	fprintf(stderr, "  -f [path]   Save screenshot to file (optional path)\n");
+	fprintf(stderr, "  -d <delay>  Delay in seconds before taking screenshot\n");
+	fprintf(stderr, "  -h          Show this help message\n");
+}
+
 int main(int argc, char **argv) {
 	struct escreen_state state = {0};
 	state.clipboard = true; // Default to clipboard
@@ -152,7 +161,7 @@ int main(int argc, char **argv) {
 
 	int c;
 	int delay = 0;
-	while ((c = getopt(argc, argv, "cfd:")) != -1) {
+	while ((c = getopt(argc, argv, "cf:d:h")) != -1) {
 		switch (c) {
 		case 'c':
 			state.clipboard = true;
@@ -161,12 +170,17 @@ int main(int argc, char **argv) {
 		case 'f':
 			state.save_file = true;
 			state.clipboard = false;
+			if (optarg) state.manual_save_path = strdup(optarg);
 			break;
 		case 'd':
 			delay = atoi(optarg);
 			break;
+		case 'h':
+			usage(argv[0]);
+			return 0;
 		default:
-			break;
+			usage(argv[0]);
+			return 1;
 		}
 	}
 
@@ -210,6 +224,8 @@ int main(int argc, char **argv) {
 	state.running = true;
 	tools_init(&state);
 	freeze_run(&state);
+	config_init(&state);
+	config_load(&state);
 	selection_run(&state);
 
 	if (state.result.width > 0 && state.result.height > 0) {

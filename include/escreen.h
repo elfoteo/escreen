@@ -62,6 +62,25 @@ struct pool_buffer {
 	cairo_t *cairo;
 };
 
+typedef struct {
+	double r, g, b, a;
+} escreen_color_t;
+
+typedef struct {
+	escreen_color_t accent;      // Selection border, active buttons
+	escreen_color_t toolbar_bg;  // Toolbar background
+	escreen_color_t button_hover; // Hovered button background
+} color_scheme_t;
+
+typedef struct {
+	char *auto_save_path;
+	char *auto_save_format;
+	char *auto_save_filename_format;
+	bool auto_save_enabled;
+	
+	color_scheme_t colors;
+} escreen_config_t;
+
 struct escreen_state {
 	struct wl_display *display;
 	struct wl_registry *registry;
@@ -82,6 +101,7 @@ struct escreen_state {
 
 	bool clipboard;
 	bool save_file;
+	char *manual_save_path;
 
 	struct wl_cursor_theme *cursor_theme;
 	struct wl_surface *cursor_surface;
@@ -108,7 +128,10 @@ struct escreen_state {
 		size_t history_rendered_count;
 		
 		bool drawing;
+		bool is_vertical;
 	} sketching;
+
+	escreen_config_t config;
 };
 
 #ifdef __cplusplus
@@ -173,5 +196,9 @@ void image_save(struct escreen_state *state, void *data, int32_t width, int32_t 
 
 // Clipboard
 void clipboard_send_data(struct escreen_state *state, void *data, size_t size);
+
+// Config
+void config_init(struct escreen_state *state);
+void config_load(struct escreen_state *state);
 
 #endif

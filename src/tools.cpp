@@ -10,18 +10,26 @@ extern void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data);
 extern void ImGui_ImplCairo_CreateFontsTexture();
 extern void ImGui_ImplCairo_DestroyFontsTexture();
 
-// Forward declarations of tool interfaces
 extern "C" tool_interface_t tool_brush;
 extern "C" tool_interface_t tool_blur;
 extern "C" tool_interface_t tool_line;
 extern "C" tool_interface_t tool_rectangle;
+extern "C" tool_interface_t tool_arrow;
+
+tool_interface_t tool_select = {
+	"Select Area",
+	TOOL_SELECT,
+	false, false, false, false, // UI flags: color, thickness, hardness, fill
+	NULL, NULL, NULL, NULL, NULL, NULL // Callbacks including on_draw_preview
+};
 
 void tools_init(struct escreen_state *state) {
-	state->sketching.tools[TOOL_SELECT] = NULL;
+	state->sketching.tools[TOOL_SELECT] = &tool_select;
 	state->sketching.tools[TOOL_BRUSH] = &tool_brush;
 	state->sketching.tools[TOOL_BLUR] = &tool_blur;
 	state->sketching.tools[TOOL_LINE] = &tool_line;
 	state->sketching.tools[TOOL_RECTANGLE] = &tool_rectangle;
+	state->sketching.tools[TOOL_ARROW] = &tool_arrow;
 	
 	state->sketching.active_tool = state->sketching.tools[TOOL_SELECT];
 	
@@ -29,6 +37,7 @@ void tools_init(struct escreen_state *state) {
 	state->sketching.thickness = 5.0f;
 	state->sketching.hardness = 0.5f;
 	state->sketching.filled = false;
+	state->sketching.is_vertical = false;
 	
 	state->sketching.history_count = 0;
 	state->sketching.history_capacity = 16;
@@ -59,10 +68,7 @@ void tools_cleanup(struct escreen_state *state) {
 	ImGui::DestroyContext();
 }
 
-static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, double *w, double *h) {
-	*w = 270;
-	*h = 100; 
-
+static void get_toolbar_placement(struct escreen_state *state, double w_h, double h_h, double w_v, double h_v, double *out_x, double *out_y, bool *out_vertical) {
 	// Find the monitor that contains the center of the selection
 	struct escreen_output *o, *best = NULL;
 	int cx = state->result.x + state->result.width / 2;
@@ -80,38 +86,62 @@ static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, 
 	double min_y = best ? best->logical_geometry.y : state->total_min_y;
 	double max_y = best ? best->logical_geometry.y + best->logical_geometry.height : state->total_max_y;
 
-	double sx = state->result.x;
-	double sy = state->result.y;
-	double sw = state->result.width;
-	double sh = state->result.height;
+	double sx = (double)state->result.x;
+	double sy = (double)state->result.y;
+	double sw = (double)state->result.width;
+	double sh = (double)state->result.height;
 
-	auto check_placement = [&](double px, double py, double *out_x, double *out_y) -> bool {
+	auto check_placement = [&](double px, double py, double cw, double ch, double *res_x, double *res_y) -> bool {
 		if (py < min_y + 4) py = min_y + 4;
-		if (py + *h > max_y - 4) py = max_y - *h - 4;
+		if (py + ch > max_y - 4) py = max_y - ch - 4;
 		if (px < min_x + 4) px = min_x + 4;
-		if (px + *w > max_x - 4) px = max_x - *w - 4;
+		if (px + cw > max_x - 4) px = max_x - cw - 4;
 
-		bool intersect_x = px < sx + sw && px + *w > sx;
-		bool intersect_y = py < sy + sh && py + *h > sy;
+		bool intersect_x = px < sx + sw && px + cw > sx;
+		bool intersect_y = py < sy + sh && py + ch > sy;
 		
-		*out_x = px;
-		*out_y = py;
+		*res_x = px;
+		*res_y = py;
 		return !(intersect_x && intersect_y);
 	};
 
-	double px, py;
-	if (check_placement(sx - *w - 12, sy + (sh - *h) / 2.0, &px, &py)) { *x = px; *y = py; return; }
-	if (check_placement(sx + sw + 12, sy + (sh - *h) / 2.0, &px, &py)) { *x = px; *y = py; return; }
-	if (check_placement(sx + (sw - *w) / 2.0, sy + sh + 12, &px, &py)) { *x = px; *y = py; return; }
-	if (check_placement(sx + (sw - *w) / 2.0, sy - *h - 12, &px, &py)) { *x = px; *y = py; return; }
+	// Priority 1: Sides (Left/Right) - ALWAYS try Vertical first
+	if (check_placement(sx - w_v - 12, sy + (sh - h_v) / 2.0, w_v, h_v, out_x, out_y)) { *out_vertical = true; return; }
+	if (check_placement(sx + sw + 12, sy + (sh - h_v) / 2.0, w_v, h_v, out_x, out_y)) { *out_vertical = true; return; }
 
-	// Fallback if it must intersect
-	*x = sx + 12;
-	*y = sy + 12;
-	if (*x < min_x + 4) *x = min_x + 4;
-	if (*x + *w > max_x - 4) *x = max_x - *w - 4;
-	if (*y < min_y + 4) *y = min_y + 4;
-	if (*y + *h > max_y - 4) *y = max_y - *h - 4;
+	// Priority 2: Bottom/Top - Try Horizontal first
+	if (check_placement(sx + (sw - w_h) / 2.0, sy + sh + 12, w_h, h_h, out_x, out_y)) { *out_vertical = false; return; }
+	if (check_placement(sx + (sw - w_h) / 2.0, sy - h_h - 12, w_h, h_h, out_x, out_y)) { *out_vertical = false; return; }
+
+	// Priority 3: Bottom/Top - Fallback to Vertical if Horizontal didn't fit
+	if (check_placement(sx + (sw - w_v) / 2.0, sy + sh + 12, w_v, h_v, out_x, out_y)) { *out_vertical = true; return; }
+	if (check_placement(sx + (sw - w_v) / 2.0, sy - h_v - 12, w_v, h_v, out_x, out_y)) { *out_vertical = true; return; }
+
+	// Final Fallback: forced vertical on side (might intersect)
+	*out_vertical = true;
+	*out_x = sx + sw + 12;
+	*out_y = sy + 12;
+	if (*out_x + w_v > max_x - 4) *out_x = sx - w_v - 12;
+	if (*out_x < min_x + 4) *out_x = min_x + 4;
+	if (*out_y + h_v > max_y - 4) *out_y = max_y - h_v - 4;
+}
+
+static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, double *w, double *h) {
+	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+	bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill;
+	
+	double w_h = has_options ? 280 : 180;
+	double h_h = has_options ? 100 : 50;
+	double w_v = has_options ? 150 : 55;
+	double h_v = 240;
+
+	get_toolbar_placement(state, w_h, h_h, w_v, h_v, x, y, &state->sketching.is_vertical);
+	
+	if (state->sketching.is_vertical) {
+		*w = w_v; *h = h_v;
+	} else {
+		*w = w_h; *h = h_h;
+	}
 }
 
 bool tools_is_on_toolbar(struct escreen_state *state, double x, double y) {
@@ -123,7 +153,7 @@ bool tools_is_on_toolbar(struct escreen_state *state, double x, double y) {
 	return (x >= tx && x < tx + tw && y >= ty && y < ty + th);
 }
 
-static bool IconButton(const char* tooltip, tool_type_t type, bool is_active) {
+static bool IconButton(struct escreen_state *state, const char* tooltip, tool_type_t type, bool is_active) {
     ImVec2 size(32, 32);
     ImVec2 pos = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton(tooltip, size);
@@ -133,13 +163,13 @@ static bool IconButton(const char* tooltip, tool_type_t type, bool is_active) {
         ImGui::SetTooltip("%s", tooltip);
     }
     
-    ImU32 bg_col = is_active ? IM_COL32(40, 100, 200, 255) : 
-                   hovered ? IM_COL32(80, 80, 80, 255) : 
-                   IM_COL32(40, 40, 40, 255);
-    ImU32 fg_col = IM_COL32(230, 230, 230, 255);
-    
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), bg_col, 4.0f);
+    ImColor bg_col = is_active ? ImColor((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a) : ImColor(0, 0, 0, 0);
+	ImColor fg_col = is_active ? ImColor(1.0f, 1.0f, 1.0f, 1.0f) : ImColor(0.7f, 0.7f, 0.7f, 1.0f);
+	
+	if (hovered && !is_active) bg_col = ImColor((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a);
+
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+	draw->AddRectFilled(pos, ImVec2(pos.x + 32, pos.y + 32), bg_col, 4.0f);
     
     ImVec2 c = ImVec2(pos.x + size.x/2, pos.y + size.y/2);
     if (type == TOOL_SELECT) {
@@ -158,6 +188,10 @@ static bool IconButton(const char* tooltip, tool_type_t type, bool is_active) {
         draw->AddLine(ImVec2(c.x - 8, c.y + 8), ImVec2(c.x + 8, c.y - 8), fg_col, 2.0f);
     } else if (type == TOOL_RECTANGLE) {
         draw->AddRect(ImVec2(c.x - 10, c.y - 6), ImVec2(c.x + 10, c.y + 6), fg_col, 0, 0, 2.0f);
+    } else if (type == TOOL_ARROW) {
+        draw->AddLine(ImVec2(c.x - 8, c.y + 8), ImVec2(c.x + 8, c.y - 8), fg_col, 2.0f);
+        draw->AddLine(ImVec2(c.x + 8, c.y - 8), ImVec2(c.x - 2, c.y - 8), fg_col, 2.0f);
+        draw->AddLine(ImVec2(c.x + 8, c.y - 8), ImVec2(c.x + 8, c.y + 2), fg_col, 2.0f);
     }
     
     return clicked;
@@ -173,57 +207,116 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 
 	ImGui::SetNextWindowPos(ImVec2((float)tx, (float)ty), ImGuiCond_Always);
 
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4((float)state->config.colors.toolbar_bg.r, (float)state->config.colors.toolbar_bg.g, (float)state->config.colors.toolbar_bg.b, (float)state->config.colors.toolbar_bg.a));
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a));
+	ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a));
+	ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a));
+	ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a));
+
 	if (ImGui::Begin("Escreen Sketching", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar)) {
-		if (IconButton("Select Area", TOOL_SELECT, state->sketching.active_tool == state->sketching.tools[TOOL_SELECT])) tools_set_active(state, TOOL_SELECT);
-		ImGui::SameLine();
-		if (IconButton("Brush Tool", TOOL_BRUSH, state->sketching.active_tool == state->sketching.tools[TOOL_BRUSH])) tools_set_active(state, TOOL_BRUSH);
-		ImGui::SameLine();
-		if (IconButton("Blur Tool", TOOL_BLUR, state->sketching.active_tool == state->sketching.tools[TOOL_BLUR])) tools_set_active(state, TOOL_BLUR);
-		ImGui::SameLine();
-		if (IconButton("Line Tool", TOOL_LINE, state->sketching.active_tool == state->sketching.tools[TOOL_LINE])) tools_set_active(state, TOOL_LINE);
-		ImGui::SameLine();
-		if (IconButton("Rectangle Tool", TOOL_RECTANGLE, state->sketching.active_tool == state->sketching.tools[TOOL_RECTANGLE])) tools_set_active(state, TOOL_RECTANGLE);
+		bool vert = state->sketching.is_vertical;
+		tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+		bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill;
 
-		ImGui::Spacing();
-		
-		float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
-		
-		ImGui::PushItemWidth(100);
-		if (ImGui::ColorEdit3("Color", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-			state->sketching.r = color[0];
-			state->sketching.g = color[1];
-			state->sketching.b = color[2];
-		}
-		ImGui::PopItemWidth();
-		
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
+		if (vert) ImGui::BeginGroup();
 
-		ImGui::SameLine();
-		
-		ImGui::PushItemWidth(110);
-		float thickness = (float)state->sketching.thickness;
-		if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, "Size: %.0f")) {
-			state->sketching.thickness = thickness;
-		}
-		ImGui::PopItemWidth();
+		if (IconButton(state, "Select Area", TOOL_SELECT, tool == state->sketching.tools[TOOL_SELECT])) tools_set_active(state, TOOL_SELECT);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Brush Tool", TOOL_BRUSH, tool == state->sketching.tools[TOOL_BRUSH])) tools_set_active(state, TOOL_BRUSH);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Blur Tool", TOOL_BLUR, tool == state->sketching.tools[TOOL_BLUR])) tools_set_active(state, TOOL_BLUR);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Line Tool", TOOL_LINE, tool == state->sketching.tools[TOOL_LINE])) tools_set_active(state, TOOL_LINE);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Rectangle Tool", TOOL_RECTANGLE, tool == state->sketching.tools[TOOL_RECTANGLE])) tools_set_active(state, TOOL_RECTANGLE);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Arrow Tool", TOOL_ARROW, tool == state->sketching.tools[TOOL_ARROW])) tools_set_active(state, TOOL_ARROW);
 
-		if (state->sketching.active_tool == state->sketching.tools[TOOL_BRUSH] || state->sketching.active_tool == state->sketching.tools[TOOL_BLUR]) {
-			ImGui::SameLine();
-			float hardness = (float)state->sketching.hardness;
-			ImGui::PushItemWidth(90);
-			if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, "Hard: %.2f")) {
-				state->sketching.hardness = hardness;
-			}
-			ImGui::PopItemWidth();
-		} else if (state->sketching.active_tool == state->sketching.tools[TOOL_RECTANGLE]) {
-			ImGui::SameLine();
-			bool filled = state->sketching.filled;
-			if (ImGui::Checkbox("Fill", &filled)) {
-				state->sketching.filled = filled;
+		if (vert) {
+			ImGui::EndGroup();
+			if (has_options) {
+				ImGui::SameLine();
+				ImGui::BeginGroup();
 			}
 		}
+
+		if (has_options) {
+			if (!vert) ImGui::Spacing();
+			
+			if (tool->show_color) {
+				float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
+				ImGui::PushItemWidth(vert ? 95 : 100);
+				if (ImGui::ColorEdit3("Color", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
+					state->sketching.r = color[0];
+					state->sketching.g = color[1];
+					state->sketching.b = color[2];
+				}
+				ImGui::PopItemWidth();
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
+				if (!vert) ImGui::SameLine();
+				else ImGui::Spacing();
+			}
+
+			if (tool->show_thickness) {
+				ImGui::PushItemWidth(vert ? 95 : 110);
+				float thickness = (float)state->sketching.thickness;
+				if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, vert ? "Size: %.0f" : "Size: %.0f")) {
+					state->sketching.thickness = thickness;
+				}
+				ImGui::PopItemWidth();
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size");
+				if (!vert) ImGui::SameLine();
+				else ImGui::Spacing();
+			}
+
+			if (tool->show_hardness) {
+				float hardness = (float)state->sketching.hardness;
+				ImGui::PushItemWidth(vert ? 95 : 90);
+				if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, vert ? "Hard: %.1f" : "Hard: %.2f")) {
+					state->sketching.hardness = hardness;
+				}
+				ImGui::PopItemWidth();
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hardness");
+				if (!vert) ImGui::SameLine();
+				else ImGui::Spacing();
+			}
+
+			if (tool->show_fill) {
+				bool filled = state->sketching.filled;
+				if (ImGui::Checkbox(vert ? "F" : "Fill", &filled)) {
+					state->sketching.filled = filled;
+				}
+			}
+			
+			if (vert) ImGui::EndGroup();
+		}
+
+		// Responsive positioning based on ACTUAL size
+		ImVec2 actual_size = ImGui::GetWindowSize();
+		double nx, ny;
+		bool nvert;
+		
+		// Determine dimensions for both horizontal and vertical variants to pass to placement logic
+		double current_w = (double)actual_size.x;
+		double current_h = (double)actual_size.y;
+		double alt_w, alt_h;
+
+		if (state->sketching.is_vertical) {
+			// Current is vertical, alt is horizontal
+			alt_w = has_options ? 280 : 180;
+			alt_h = has_options ? 100 : 50;
+			get_toolbar_placement(state, alt_w, alt_h, current_w, current_h, &nx, &ny, &nvert);
+		} else {
+			// Current is horizontal, alt is vertical
+			alt_w = has_options ? 150 : 55;
+			alt_h = 240;
+			get_toolbar_placement(state, current_w, current_h, alt_w, alt_h, &nx, &ny, &nvert);
+		}
+
+		ImGui::SetWindowPos(ImVec2((float)nx, (float)ny));
 	}
 	ImGui::End();
+	ImGui::PopStyleColor(5);
 
 	ImGui::Render();
 	ImGui_ImplCairo_RenderDrawData(cr, ImGui::GetDrawData());

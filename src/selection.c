@@ -105,11 +105,11 @@ static struct pool_buffer *get_next_buffer(struct escreen_state *state, struct e
 	return pool;
 }
 
-static void draw_handle(cairo_t *cr, double x, double y) {
+static void draw_handle(cairo_t *cr, double x, double y, escreen_color_t accent) {
 	cairo_set_source_rgba(cr, 1, 1, 1, 1);
 	cairo_rectangle(cr, x - HANDLE_SIZE/2, y - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
 	cairo_fill_preserve(cr);
-	cairo_set_source_rgba(cr, 0, 0, 0, 1);
+	cairo_set_source_rgba(cr, accent.r, accent.g, accent.b, accent.a);
 	cairo_set_line_width(cr, 1);
 	cairo_stroke(cr);
 }
@@ -175,31 +175,41 @@ static void render(struct escreen_output *output) {
 			}
 			cairo_restore(cr);
 		}
-
 		// Draw sketching tools
 		tools_draw(state, cr);
-		// Draw toolbar/UI for tools
-		tools_draw_ui(state, cr);
 
 		double l_x = (double)state->result.x;
 		double l_y = (double)state->result.y;
 		double l_w = (double)state->result.width;
 		double l_h = (double)state->result.height;
 
-		cairo_set_source_rgb(cr, 0.2, 0.6, 1.0);
+		cairo_set_source_rgba(cr, state->config.colors.accent.r, state->config.colors.accent.g, state->config.colors.accent.b, state->config.colors.accent.a);
 		cairo_set_line_width(cr, 2);
 		cairo_rectangle(cr, l_x, l_y, l_w, l_h);
 		cairo_stroke(cr);
 
 		// Draw handles
-		draw_handle(cr, l_x, l_y);
-		draw_handle(cr, l_x + l_w, l_y);
-		draw_handle(cr, l_x, l_y + l_h);
-		draw_handle(cr, l_x + l_w, l_y + l_h);
-		draw_handle(cr, l_x + l_w/2, l_y);
-		draw_handle(cr, l_x + l_w/2, l_y + l_h);
-		draw_handle(cr, l_x, l_y + l_h/2);
-		draw_handle(cr, l_x + l_w, l_y + l_h/2);
+		escreen_color_t accent = state->config.colors.accent;
+		draw_handle(cr, l_x, l_y, accent);
+		draw_handle(cr, l_x + l_w, l_y, accent);
+		draw_handle(cr, l_x, l_y + l_h, accent);
+		draw_handle(cr, l_x + l_w, l_y + l_h, accent);
+		draw_handle(cr, l_x + l_w/2, l_y, accent);
+		draw_handle(cr, l_x + l_w/2, l_y + l_h, accent);
+		draw_handle(cr, l_x, l_y + l_h/2, accent);
+		draw_handle(cr, l_x + l_w, l_y + l_h/2, accent);
+
+		// Draw tool cursor preview if applicable
+		struct escreen_seat *seat;
+		wl_list_for_each(seat, &state->seats, link) {
+			tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+			if (tool && tool->on_draw_preview) {
+				tool->on_draw_preview(state, cr, seat->x, seat->y);
+			}
+		}
+
+		// Draw toolbar/UI for tools (LAST so it's on top)
+		tools_draw_ui(state, cr);
 	}
 	cairo_restore(cr);
 	cairo_surface_flush(pool->cairo_surface);
@@ -339,7 +349,9 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 			case HANDLE_NONE:
 				if (seat->x >= state->result.x && seat->x < state->result.x + state->result.width &&
 					seat->y >= state->result.y && seat->y < state->result.y + state->result.height) {
-					cname = "move"; // or pointer
+					if (state->sketching.active_tool == NULL) {
+						cname = "move"; // or pointer
+					}
 				}
 				break;
 		}

@@ -56,7 +56,7 @@ static void draw_soft_spot(cairo_t *cr, double cx, double cy, double r, double g
 static void render_brush_internal(cairo_t *cr, point_t *points, size_t n, double r, double g, double b, double a, double thickness, double hardness) {
 	if (n < 1) return;
 	
-	if (hardness >= 0.95) {
+	if (hardness >= 1.0) {
 		cairo_set_source_rgba(cr, r, g, b, a);
 		cairo_set_line_width(cr, thickness);
 		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
@@ -98,12 +98,26 @@ static void brush_render_action(struct escreen_state *state, cairo_t *cr, action
 		action->thickness, action->hardness);
 }
 
+static void brush_on_draw_cursor_preview(struct escreen_state *state, cairo_t *cr, double x, double y) {
+	cairo_save(cr);
+	cairo_set_source_rgba(cr, state->sketching.r, state->sketching.g, state->sketching.b, state->sketching.a);
+	cairo_set_line_width(cr, 1.0);
+	cairo_arc(cr, x, y, state->sketching.thickness / 2.0, 0, 2 * M_PI);
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
 tool_interface_t tool_brush = {
 	.name = "Brush",
 	.type = TOOL_BRUSH,
+	.show_color = true,
+	.show_thickness = true,
+	.show_hardness = true,
+	.show_fill = false,
 	.on_mousedown = brush_on_mousedown,
 	.on_mousemove = brush_on_mousemove,
 	.on_mouseup = brush_on_mouseup,
 	.draw_preview = brush_draw_preview,
 	.render_action = brush_render_action,
+	.on_draw_preview = brush_on_draw_cursor_preview,
 };

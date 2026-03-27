@@ -32,15 +32,16 @@ PROTOCOL_SOURCES = \
 	$(BUILD_DIR)/wlr-data-control-unstable-v1-client-protocol.c
 
 SOURCES = $(SRC_DIR)/escreen.c $(SRC_DIR)/selection.c $(SRC_DIR)/freeze.c $(SRC_DIR)/image.c $(SRC_DIR)/clipboard.c \
-          $(SRC_DIR)/tool_brush.c $(SRC_DIR)/tool_blur.c $(SRC_DIR)/tool_line.c $(SRC_DIR)/tool_rect.c \
+          $(SRC_DIR)/tool_brush.c $(SRC_DIR)/tool_blur.c $(SRC_DIR)/tool_line.c $(SRC_DIR)/tool_rect.c $(SRC_DIR)/tool_arrow.c \
           $(SRC_DIR)/tools.cpp $(SRC_DIR)/imgui_impl_cairo.cpp \
           imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_widgets.cpp imgui/imgui_tables.cpp
-OBJECTS = $(BUILD_DIR)/escreen.o $(BUILD_DIR)/selection.o $(BUILD_DIR)/freeze.o $(BUILD_DIR)/image.o $(BUILD_DIR)/clipboard.o \
-          $(BUILD_DIR)/tool_brush.o $(BUILD_DIR)/tool_blur.o $(BUILD_DIR)/tool_line.o $(BUILD_DIR)/tool_rect.o \
+OBJECTS = $(BUILD_DIR)/escreen.o $(BUILD_DIR)/selection.o $(BUILD_DIR)/freeze.o $(BUILD_DIR)/image.o $(BUILD_DIR)/clipboard.o $(BUILD_DIR)/config.o \
+          $(BUILD_DIR)/tool_brush.o $(BUILD_DIR)/tool_blur.o $(BUILD_DIR)/tool_line.o $(BUILD_DIR)/tool_rect.o $(BUILD_DIR)/tool_arrow.o \
           $(BUILD_DIR)/tools.o $(BUILD_DIR)/imgui_impl_cairo.o \
           $(BUILD_DIR)/imgui.o $(BUILD_DIR)/imgui_draw.o $(BUILD_DIR)/imgui_widgets.o $(BUILD_DIR)/imgui_tables.o \
           $(PROTOCOL_SOURCES:.c=.o)
-HEADERS = include/escreen.h include/tools.h $(PROTOCOL_HEADERS) imgui/imgui.h
+HEADERS = include/escreen.h include/tools.h $(PROTOCOL_HEADERS)
+IMGUI_HEADERS = imgui/imgui.h imgui/imconfig.h imgui/imgui_internal.h imgui/imstb_rectpack.h imgui/imstb_textedit.h imgui/imstb_truetype.h
 
 SCANNER = wayland-scanner
 
@@ -74,13 +75,19 @@ $(BUILD_DIR)/xdg-shell-client-protocol.o: $(BUILD_DIR)/xdg-shell-client-protocol
 $(BUILD_DIR)/wlr-data-control-unstable-v1-client-protocol.o: $(BUILD_DIR)/wlr-data-control-unstable-v1-client-protocol.c $(BUILD_DIR)/wlr-data-control-unstable-v1-client-protocol.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/config.o: $(SRC_DIR)/config.c $(HEADERS)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS) $(IMGUI_HEADERS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: imgui/%.cpp $(HEADERS)
+$(BUILD_DIR)/imgui_impl_cairo.o: $(SRC_DIR)/imgui_impl_cairo.cpp $(IMGUI_HEADERS)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.o: imgui/%.cpp $(IMGUI_HEADERS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
