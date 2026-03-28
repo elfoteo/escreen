@@ -126,12 +126,14 @@ static void render(struct escreen_output *output) {
 	struct pool_buffer *pool = get_next_buffer(state, output, b_w, b_h);
 	if (!pool) return;
 	pool->busy = true;
+	
+	struct escreen_seat *seat = wl_container_of(state->seats.next, seat, link);
 
-	// 1. CLEAR STICKY CLIP & BUFFER
+	// 1. CLEAR & BACKGROUND: only repaint if not just doing darkened-image (already pre-baked)
 	memset(pool->data, 0, pool->size);
 	pixman_image_set_clip_region32(pool->pixman, NULL);
 
-	// 2. DARKENED BACKGROUND (OVERWRITE EVERYTHING)
+	// 2. DARKENED BACKGROUND (full-frame, SIMD fast)
 	if (output->darkened_image) {
 		pixman_image_set_repeat(output->darkened_image, PIXMAN_REPEAT_PAD);
 		pixman_f_transform_t f_trans;
@@ -145,9 +147,7 @@ static void render(struct escreen_output *output) {
 		pixman_image_composite(PIXMAN_OP_SRC, output->darkened_image, NULL, pool->pixman, 0, 0, 0, 0, 0, 0, b_w, b_h);
 	}
 
-	struct escreen_seat *seat = wl_container_of(state->seats.next, seat, link);
-	
-	// 3. CAIRO RENDERING
+	// 3. CAIRO RENDERING — clipped to the selection box for speed
 	cairo_surface_mark_dirty(pool->cairo_surface);
 	cairo_t *cr = pool->cairo;
 	cairo_save(cr);
@@ -157,32 +157,40 @@ static void render(struct escreen_output *output) {
 	cairo_translate(cr, -output->logical_geometry.x, -output->logical_geometry.y);
 
 	if (seat->has_selection) {
-		// Global seamless reveal from shared in-memory capture
-		cairo_surface_t *global_capture = state->global_capture;
-
-		if (global_capture && cairo_surface_status(global_capture) == CAIRO_STATUS_SUCCESS) {
-			cairo_save(cr);
-			// Place the global capture at its correct logical global offset
-			cairo_set_source_surface(cr, global_capture, state->total_min_x, state->total_min_y);
-			cairo_rectangle(cr, state->result.x, state->result.y, state->result.width, state->result.height);
-			cairo_fill(cr);
-			
-			// Exact same behavior for the baked history layer
-			if (state->sketching.history_layer) {
-				cairo_set_source_surface(cr, state->sketching.history_layer, state->total_min_x, state->total_min_y);
-				cairo_rectangle(cr, state->result.x, state->result.y, state->result.width, state->result.height);
-				cairo_fill(cr);
-			}
-			cairo_restore(cr);
-		}
-		// Draw sketching tools
-		tools_draw(state, cr);
-
 		double l_x = (double)state->result.x;
 		double l_y = (double)state->result.y;
 		double l_w = (double)state->result.width;
 		double l_h = (double)state->result.height;
+		
+		// Clip Cairo operations to selection area + handle overhang
+		double clip_pad = HANDLE_SIZE + 4.0;
+		cairo_rectangle(cr, l_x - clip_pad, l_y - clip_pad,
+			l_w + clip_pad * 2.0, l_h + clip_pad * 2.0);
+		cairo_clip(cr);
 
+		// Bake any finished tool actions into the history layer BEFORE drawing it
+		tools_update_history(state);
+
+		// Reveal the sharp (undarked) screenshot inside the selection
+		cairo_surface_t *global_capture = state->global_capture;
+		if (global_capture && cairo_surface_status(global_capture) == CAIRO_STATUS_SUCCESS) {
+			cairo_save(cr);
+			cairo_set_source_surface(cr, global_capture, state->total_min_x, state->total_min_y);
+			cairo_rectangle(cr, l_x, l_y, l_w, l_h);
+			cairo_fill(cr);
+			
+			if (state->sketching.history_layer) {
+				cairo_set_source_surface(cr, state->sketching.history_layer, state->total_min_x, state->total_min_y);
+				cairo_rectangle(cr, l_x, l_y, l_w, l_h);
+				cairo_fill(cr);
+			}
+			cairo_restore(cr);
+		}
+
+		// Draw sketching tool preview (in progress strokes)
+		tools_draw(state, cr);
+
+		// Selection border
 		cairo_set_source_rgba(cr, state->config.colors.accent.r, state->config.colors.accent.g, state->config.colors.accent.b, state->config.colors.accent.a);
 		cairo_set_line_width(cr, 2);
 		cairo_rectangle(cr, l_x, l_y, l_w, l_h);
@@ -199,16 +207,17 @@ static void render(struct escreen_output *output) {
 		draw_handle(cr, l_x, l_y + l_h/2, accent);
 		draw_handle(cr, l_x + l_w, l_y + l_h/2, accent);
 
-		// Draw tool cursor preview if applicable
-		struct escreen_seat *seat;
-		wl_list_for_each(seat, &state->seats, link) {
+		// Tool cursor preview
+		struct escreen_seat *seat_iter;
+		wl_list_for_each(seat_iter, &state->seats, link) {
 			tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
 			if (tool && tool->on_draw_preview) {
-				tool->on_draw_preview(state, cr, seat->x, seat->y);
+				tool->on_draw_preview(state, cr, seat_iter->x, seat_iter->y);
 			}
 		}
 
-		// Draw toolbar/UI for tools (LAST so it's on top)
+		// Toolbar UI — needs full clip reset since it floats outside selection
+		cairo_reset_clip(cr);
 		tools_draw_ui(state, cr);
 	}
 	cairo_restore(cr);
@@ -218,13 +227,17 @@ static void render(struct escreen_output *output) {
 	output->frame_callback = wl_surface_frame(output->surface);
 	wl_callback_add_listener(output->frame_callback, &frame_listener, output);
 
-	// DAMAGE AND COMMIT LIKE SLURP
 	wl_surface_attach(output->surface, pool->buffer, 0, 0);
 	wl_surface_damage(output->surface, 0, 0, output->width, output->height);
 	wl_surface_damage_buffer(output->surface, 0, 0, b_w, b_h);
 	wl_surface_set_buffer_scale(output->surface, output->scale);
 	wl_surface_commit(output->surface);
 	output->dirty = false;
+	
+	if (state->sketching.ui_layout_frames > 0) {
+		output->dirty = true;
+		state->sketching.ui_layout_frames--;
+	}
 }
 
 static void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
@@ -333,31 +346,48 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 
 	struct escreen_state *state = seat->state;
 
-	if (seat->selection_status >= SELECTION_EDITING && !seat->button_pressed) {
-		// Update cursor for handles
-		handle_type_t hover = get_handle_at(state->result, seat->x, seat->y);
+	if (seat->selection_status >= SELECTION_EDITING || seat->button_pressed) {
 		const char *cname = "crosshair";
-		switch (hover) {
-			case HANDLE_TOP_LEFT: cname = "nw-resize"; break;
-			case HANDLE_TOP_RIGHT: cname = "ne-resize"; break;
-			case HANDLE_BOTTOM_LEFT: cname = "sw-resize"; break;
-			case HANDLE_BOTTOM_RIGHT: cname = "se-resize"; break;
-			case HANDLE_TOP: cname = "n-resize"; break;
-			case HANDLE_BOTTOM: cname = "s-resize"; break;
-			case HANDLE_LEFT: cname = "w-resize"; break;
-			case HANDLE_RIGHT: cname = "e-resize"; break;
-			case HANDLE_NONE:
-				if (seat->x >= state->result.x && seat->x < state->result.x + state->result.width &&
-					seat->y >= state->result.y && seat->y < state->result.y + state->result.height) {
-					if (state->sketching.active_tool == NULL) {
-						cname = "move"; // or pointer
-					}
-				}
-				break;
-		}
 		
-		if (tools_is_on_toolbar(state, seat->x, seat->y)) {
-			cname = "default"; // Pointer/Arrow over toolbar
+		if (seat->selection_status == SELECTION_RESIZING) {
+			switch (seat->active_handle) {
+				case HANDLE_TOP_LEFT: cname = "nw-resize"; break;
+				case HANDLE_TOP_RIGHT: cname = "ne-resize"; break;
+				case HANDLE_BOTTOM_LEFT: cname = "sw-resize"; break;
+				case HANDLE_BOTTOM_RIGHT: cname = "se-resize"; break;
+				case HANDLE_TOP: cname = "n-resize"; break;
+				case HANDLE_BOTTOM: cname = "s-resize"; break;
+				case HANDLE_LEFT: cname = "w-resize"; break;
+				case HANDLE_RIGHT: cname = "e-resize"; break;
+				default: break;
+			}
+		} else if (seat->selection_status == SELECTION_MOVING) {
+			cname = "grabbing";
+		} else if (!seat->button_pressed) {
+			handle_type_t hover = get_handle_at(state->result, seat->x, seat->y);
+			if (hover != HANDLE_NONE) {
+				switch (hover) {
+					case HANDLE_TOP_LEFT: cname = "nw-resize"; break;
+					case HANDLE_TOP_RIGHT: cname = "ne-resize"; break;
+					case HANDLE_BOTTOM_LEFT: cname = "sw-resize"; break;
+					case HANDLE_BOTTOM_RIGHT: cname = "se-resize"; break;
+					case HANDLE_TOP: cname = "n-resize"; break;
+					case HANDLE_BOTTOM: cname = "s-resize"; break;
+					case HANDLE_LEFT: cname = "w-resize"; break;
+					case HANDLE_RIGHT: cname = "e-resize"; break;
+					default: break;
+				}
+			} else if (seat->x >= state->result.x && seat->x < state->result.x + state->result.width &&
+				seat->y >= state->result.y && seat->y < state->result.y + state->result.height) {
+				tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+				if (tool && tool->type == TOOL_SELECT) {
+					cname = "grabbing";
+				}
+			}
+			
+			if (tools_is_on_toolbar(state, seat->x, seat->y)) {
+				cname = "default";
+			}
 		}
 		
 		set_cursor(seat, pointer, seat->pointer_serial, cname);
@@ -450,7 +480,8 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 					seat->active_handle = handle;
 				} else if (seat->x >= seat->state->result.x && seat->x < seat->state->result.x + seat->state->result.width &&
 						   seat->y >= seat->state->result.y && seat->y < seat->state->result.y + seat->state->result.height) {
-					if (seat->state->sketching.active_tool == NULL) { // TOOL_SELECT
+					tool_interface_t *tool = (tool_interface_t*)seat->state->sketching.active_tool;
+					if (tool == NULL || tool->type == TOOL_SELECT) {
 						seat->selection_status = SELECTION_MOVING;
 					} else {
 						tools_handle_button(seat->state, seat->x, seat->y, true);

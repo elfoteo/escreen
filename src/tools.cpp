@@ -15,6 +15,9 @@ extern "C" tool_interface_t tool_blur;
 extern "C" tool_interface_t tool_line;
 extern "C" tool_interface_t tool_rectangle;
 extern "C" tool_interface_t tool_arrow;
+extern "C" tool_interface_t tool_stamp;
+
+int* tool_stamp_get_counter_ptr();
 
 tool_interface_t tool_select = {
 	"Select Area",
@@ -30,6 +33,7 @@ void tools_init(struct escreen_state *state) {
 	state->sketching.tools[TOOL_LINE] = &tool_line;
 	state->sketching.tools[TOOL_RECTANGLE] = &tool_rectangle;
 	state->sketching.tools[TOOL_ARROW] = &tool_arrow;
+	state->sketching.tools[TOOL_STAMP] = &tool_stamp;
 	
 	state->sketching.active_tool = state->sketching.tools[TOOL_SELECT];
 	
@@ -130,8 +134,8 @@ static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, 
 	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
 	bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill;
 	
-	double w_h = has_options ? 280 : 180;
-	double h_h = has_options ? 100 : 50;
+	double w_h = has_options ? 200 : 180;
+	double h_h = has_options ? 160 : 50;
 	double w_v = has_options ? 150 : 55;
 	double h_v = 240;
 
@@ -192,6 +196,9 @@ static bool IconButton(struct escreen_state *state, const char* tooltip, tool_ty
         draw->AddLine(ImVec2(c.x - 8, c.y + 8), ImVec2(c.x + 8, c.y - 8), fg_col, 2.0f);
         draw->AddLine(ImVec2(c.x + 8, c.y - 8), ImVec2(c.x - 2, c.y - 8), fg_col, 2.0f);
         draw->AddLine(ImVec2(c.x + 8, c.y - 8), ImVec2(c.x + 8, c.y + 2), fg_col, 2.0f);
+    } else if (type == TOOL_STAMP) {
+        draw->AddCircleFilled(ImVec2(c.x, c.y), 8.0f, fg_col);
+        draw->AddText(ImVec2(c.x - 3, c.y - 7), IM_COL32(255, 255, 255, 255), "1");
     }
     
     return clicked;
@@ -202,10 +209,27 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 	double tx, ty, tw, th;
 	get_toolbar_rect(state, &tx, &ty, &tw, &th);
 
+	ImVec2 pivot(0.0f, 0.0f);
+	ImVec2 pos((float)tx, (float)ty);
+
+	if (tx + tw / 2.0 < state->result.x) { pivot.x = 1.0f; pos.x = tx + tw; }
+	else if (tx > state->result.x + state->result.width - 10) { pivot.x = 0.0f; pos.x = tx; }
+	else { pivot.x = 0.5f; pos.x = tx + tw / 2.0; }
+
+	if (ty + th / 2.0 < state->result.y) { pivot.y = 1.0f; pos.y = ty + th; }
+	else if (ty > state->result.y + state->result.height - 10) { pivot.y = 0.0f; pos.y = ty; }
+	else { pivot.y = 0.5f; pos.y = ty + th / 2.0; }
+
+	static bool last_vert = state->sketching.is_vertical;
+	if (last_vert != state->sketching.is_vertical) {
+		state->sketching.ui_layout_frames = 12;
+		last_vert = state->sketching.is_vertical;
+	}
+
 	io.DisplaySize = ImVec2((float)state->total_max_x, (float)state->total_max_y);
 	ImGui::NewFrame();
 
-	ImGui::SetNextWindowPos(ImVec2((float)tx, (float)ty), ImGuiCond_Always);
+	ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
 
 	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4((float)state->config.colors.toolbar_bg.r, (float)state->config.colors.toolbar_bg.g, (float)state->config.colors.toolbar_bg.b, (float)state->config.colors.toolbar_bg.a));
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a));
@@ -231,6 +255,8 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		if (IconButton(state, "Rectangle Tool", TOOL_RECTANGLE, tool == state->sketching.tools[TOOL_RECTANGLE])) tools_set_active(state, TOOL_RECTANGLE);
 		if (!vert) ImGui::SameLine();
 		if (IconButton(state, "Arrow Tool", TOOL_ARROW, tool == state->sketching.tools[TOOL_ARROW])) tools_set_active(state, TOOL_ARROW);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Number Stamps", TOOL_STAMP, tool == state->sketching.tools[TOOL_STAMP])) tools_set_active(state, TOOL_STAMP);
 
 		if (vert) {
 			ImGui::EndGroup();
@@ -245,7 +271,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 			
 			if (tool->show_color) {
 				float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
-				ImGui::PushItemWidth(vert ? 95 : 100);
+				ImGui::PushItemWidth(vert ? 95 : 120);
 				if (ImGui::ColorEdit3("Color", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
 					state->sketching.r = color[0];
 					state->sketching.g = color[1];
@@ -253,39 +279,56 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
-				if (!vert) ImGui::SameLine();
-				else ImGui::Spacing();
+				ImGui::Spacing();
 			}
 
 			if (tool->show_thickness) {
-				ImGui::PushItemWidth(vert ? 95 : 110);
+				ImGui::PushItemWidth(vert ? 95 : 120);
 				float thickness = (float)state->sketching.thickness;
-				if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, vert ? "Size: %.0f" : "Size: %.0f")) {
+				if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, "Size: %.0f")) {
 					state->sketching.thickness = thickness;
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size");
-				if (!vert) ImGui::SameLine();
-				else ImGui::Spacing();
+				ImGui::Spacing();
 			}
 
 			if (tool->show_hardness) {
 				float hardness = (float)state->sketching.hardness;
-				ImGui::PushItemWidth(vert ? 95 : 90);
-				if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, vert ? "Hard: %.1f" : "Hard: %.2f")) {
+				ImGui::PushItemWidth(vert ? 95 : 120);
+				if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, "Hard: %.2f")) {
 					state->sketching.hardness = hardness;
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hardness");
-				if (!vert) ImGui::SameLine();
-				else ImGui::Spacing();
+				ImGui::Spacing();
 			}
 
 			if (tool->show_fill) {
+				ImGui::PushItemWidth(vert ? 95 : 120);
 				bool filled = state->sketching.filled;
-				if (ImGui::Checkbox(vert ? "F" : "Fill", &filled)) {
+				if (ImGui::Checkbox("Fill", &filled)) {
 					state->sketching.filled = filled;
 				}
+				ImGui::PopItemWidth();
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fill");
+				ImGui::Spacing();
+			}
+
+			if (tool->type == TOOL_STAMP) {
+				int* counter_ptr = tool_stamp_get_counter_ptr();
+				ImGui::PushItemWidth(vert ? 95 : 75);
+				if (ImGui::InputInt("##StampCounter", counter_ptr)) {
+					if (*counter_ptr < 1) *counter_ptr = 1;
+				}
+				ImGui::PopItemWidth();
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next Number");
+				
+				ImGui::SameLine();
+				if (ImGui::Button("Reset to 1")) {
+					*counter_ptr = 1;
+				}
+				ImGui::Spacing();
 			}
 			
 			if (vert) ImGui::EndGroup();
@@ -324,7 +367,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 
 extern "C" {
 
-void tools_draw(struct escreen_state *state, cairo_t *cr) {
+void tools_update_history(struct escreen_state *state) {
 	if (!state->sketching.history_layer && state->global_capture) {
 		int w = cairo_image_surface_get_width(state->global_capture);
 		int h = cairo_image_surface_get_height(state->global_capture);
@@ -358,15 +401,18 @@ void tools_draw(struct escreen_state *state, cairo_t *cr) {
 			state->sketching.history_rendered_count = state->sketching.history_undo_pos;
 		}
 	}
+}
 
+void tools_draw(struct escreen_state *state, cairo_t *cr) {
 	if (state->sketching.drawing && state->sketching.active_tool) {
 		state->sketching.active_tool->draw_preview(state, cr);
 	}
 }
 
 void tools_set_active(struct escreen_state *state, tool_type_t type) {
-	if (type < TOOL_COUNT) {
+	if (type < TOOL_COUNT && state->sketching.active_tool != state->sketching.tools[type]) {
 		state->sketching.active_tool = state->sketching.tools[type];
+		state->sketching.ui_layout_frames = 12; // Force 12 frames to settle ImGui layout across all outputs
 	}
 }
 
@@ -379,11 +425,11 @@ void tools_handle_button(struct escreen_state *state, double x, double y, bool p
 
 	if (pressed) {
 		state->sketching.drawing = true;
-		if (state->sketching.active_tool) {
+		if (state->sketching.active_tool && state->sketching.active_tool->on_mousedown) {
 			state->sketching.active_tool->on_mousedown(state, x, y);
 		}
 	} else {
-		if (state->sketching.drawing && state->sketching.active_tool) {
+		if (state->sketching.drawing && state->sketching.active_tool && state->sketching.active_tool->on_mouseup) {
 			state->sketching.active_tool->on_mouseup(state, x, y);
 		}
 		state->sketching.drawing = false;
@@ -394,7 +440,7 @@ void tools_handle_motion(struct escreen_state *state, double x, double y) {
 	ImGuiIO& io = ImGui::GetIO();
 	io.MousePos = ImVec2((float)x, (float)y);
 
-	if (state->sketching.drawing && state->sketching.active_tool) {
+	if (state->sketching.drawing && state->sketching.active_tool && state->sketching.active_tool->on_mousemove) {
 		state->sketching.active_tool->on_mousemove(state, x, y);
 	}
 }

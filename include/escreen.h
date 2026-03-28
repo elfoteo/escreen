@@ -129,6 +129,7 @@ struct escreen_state {
 		
 		bool drawing;
 		bool is_vertical;
+		int ui_layout_frames;
 	} sketching;
 
 	escreen_config_t config;

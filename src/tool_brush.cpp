@@ -11,7 +11,7 @@ static void brush_on_mousedown(struct escreen_state *state, double x, double y) 
 	(void)state;
 	num_points = 0;
 	capacity = 16;
-	current_points = malloc(capacity * sizeof(point_t));
+	current_points = (point_t*)malloc(capacity * sizeof(point_t));
 	current_points[num_points++] = (point_t){x, y};
 }
 
@@ -19,7 +19,7 @@ static void brush_on_mousemove(struct escreen_state *state, double x, double y) 
 	(void)state;
 	if (num_points >= capacity) {
 		capacity *= 2;
-		current_points = realloc(current_points, capacity * sizeof(point_t));
+		current_points = (point_t*)realloc(current_points, capacity * sizeof(point_t));
 	}
 	current_points[num_points++] = (point_t){x, y};
 }
