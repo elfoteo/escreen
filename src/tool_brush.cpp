@@ -6,22 +6,88 @@
 static point_t *current_points = NULL;
 static size_t num_points = 0;
 static size_t capacity = 0;
+static cairo_surface_t *brush_scratch_surface = NULL;
 
 static void brush_on_mousedown(struct escreen_state *state, double x, double y) {
-	(void)state;
 	num_points = 0;
 	capacity = 16;
 	current_points = (point_t*)malloc(capacity * sizeof(point_t));
 	current_points[num_points++] = (point_t){x, y};
+
+	if (!brush_scratch_surface && state->global_capture) {
+		int w = cairo_image_surface_get_width(state->global_capture);
+		int h = cairo_image_surface_get_height(state->global_capture);
+		brush_scratch_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+	}
+
+	if (brush_scratch_surface) {
+		cairo_t *cr = cairo_create(brush_scratch_surface);
+		cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+		cairo_paint(cr);
+		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+		
+		double thickness = state->sketching.thickness;
+		double hardness = state->sketching.hardness;
+		if (hardness >= 1.0) {
+			cairo_set_source_rgba(cr, state->sketching.r, state->sketching.g, state->sketching.b, state->sketching.a);
+			cairo_set_line_width(cr, thickness);
+			cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+			cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+			cairo_move_to(cr, x, y);
+			cairo_line_to(cr, x, y);
+			cairo_stroke(cr);
+		} else {
+			draw_soft_spot(cr, x, y, state->sketching.r, state->sketching.g, state->sketching.b, state->sketching.a, thickness, hardness);
+		}
+		cairo_destroy(cr);
+	}
 }
 
 static void brush_on_mousemove(struct escreen_state *state, double x, double y) {
-	(void)state;
 	if (num_points >= capacity) {
 		capacity *= 2;
 		current_points = (point_t*)realloc(current_points, capacity * sizeof(point_t));
 	}
 	current_points[num_points++] = (point_t){x, y};
+
+	if (brush_scratch_surface && num_points >= 2) {
+		cairo_t *cr = cairo_create(brush_scratch_surface);
+		
+		double r = state->sketching.r;
+		double g = state->sketching.g;
+		double b = state->sketching.b;
+		double a = state->sketching.a;
+		double thickness = state->sketching.thickness;
+		double hardness = state->sketching.hardness;
+
+		double x1 = current_points[num_points-2].x;
+		double y1 = current_points[num_points-2].y;
+		double x2 = x;
+		double y2 = y;
+
+		if (hardness >= 1.0) {
+			cairo_set_source_rgba(cr, r, g, b, a);
+			cairo_set_line_width(cr, thickness);
+			cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+			cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+			cairo_move_to(cr, x1, y1);
+			cairo_line_to(cr, x2, y2);
+			cairo_stroke(cr);
+		} else {
+			double dx = x2 - x1;
+			double dy = y2 - y1;
+			double dist = sqrt(dx*dx + dy*dy);
+			double step = thickness * 0.1;
+			if (step < 1.0) step = 1.0;
+			for (double d = step; d < dist; d += step) {
+				double cx = x1 + dx * (d / dist);
+				double cy = y1 + dy * (d / dist);
+				draw_soft_spot(cr, cx, cy, r, g, b, a, thickness, hardness);
+			}
+			draw_soft_spot(cr, x2, y2, r, g, b, a, thickness, hardness);
+		}
+		cairo_destroy(cr);
+	}
 }
 
 static void brush_on_mouseup(struct escreen_state *state, double x, double y) {
@@ -86,9 +152,12 @@ static void render_brush_internal(cairo_t *cr, point_t *points, size_t n, double
 }
 
 static void brush_draw_preview(struct escreen_state *state, cairo_t *cr) {
-	render_brush_internal(cr, current_points, num_points, 
-		state->sketching.r, state->sketching.g, state->sketching.b, state->sketching.a,
-		state->sketching.thickness, state->sketching.hardness);
+	if (brush_scratch_surface) {
+		cairo_save(cr);
+		cairo_set_source_surface(cr, brush_scratch_surface, state->total_min_x, state->total_min_y);
+		cairo_paint(cr);
+		cairo_restore(cr);
+	}
 }
 
 static void brush_render_action(struct escreen_state *state, cairo_t *cr, action_t *action) {

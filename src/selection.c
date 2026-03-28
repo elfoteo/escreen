@@ -530,6 +530,25 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	}
 }
 
+static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
+	struct escreen_seat *seat = data;
+	(void)pointer; (void)time;
+
+	if (seat->xkb.state && xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE)) {
+		if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+			tool_interface_t *tool = (tool_interface_t*)seat->state->sketching.active_tool;
+			if (tool && tool->show_thickness) {
+				double v = wl_fixed_to_double(value);
+				// A typical discrete scroll tick is ~10-15. Smooth scrolling emits smaller values.
+				seat->state->sketching.thickness -= v * 0.15;
+				if (seat->state->sketching.thickness < 1.0) seat->state->sketching.thickness = 1.0;
+				if (seat->state->sketching.thickness > 100.0) seat->state->sketching.thickness = 100.0;
+				update_dirty_outputs(seat);
+			}
+		}
+	}
+}
+
 static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
 		uint32_t format, int32_t fd, uint32_t size) {
 	struct escreen_seat *seat = data;
@@ -610,7 +629,7 @@ const struct wl_pointer_listener pointer_listener = {
 	.leave = pointer_leave,
 	.motion = pointer_motion,
 	.button = pointer_button,
-	.axis = (void*)noop,
+	.axis = pointer_axis,
 	.frame = (void*)noop,
 	.axis_source = (void*)noop,
 	.axis_stop = (void*)noop,
