@@ -37,23 +37,17 @@ static void stamp_on_mousemove(struct escreen_state *state, double x, double y) 
 static void stamp_on_mouseup(struct escreen_state *state, double x, double y) {
 	sx = x;
 	sy = y;
-	int num = get_next_stamp(state);
-	action_t action = {
-		.type = TOOL_STAMP,
-		.r = state->sketching.r,
-		.g = state->sketching.g,
-		.b = state->sketching.b,
-		.a = state->sketching.a,
-		.thickness = state->sketching.thickness,
-		.hardness = 0.0,
-		.filled = true,
-		.points = NULL,
-		.num_points = 0,
-		.x1 = sx, .y1 = sy, .x2 = sx, .y2 = sy,
-		.stamp_number = num
-	};
+	action_t action = {};
+	action.type = TOOL_STAMP;
+	action.r = state->sketching.r;
+	action.g = state->sketching.g;
+	action.b = state->sketching.b;
+	action.a = state->sketching.a;
+	action.thickness = state->sketching.thickness;
+	action.x1 = sx; action.y1 = sy;
+	action.stamp_number = current_stamp_counter++;
+
 	tools_add_action(state, action);
-	current_stamp_counter++;
 }
 
 static void draw_stamp(cairo_t *cr, double x, double y, double r, double g, double b, double a, double thickness, int number) {

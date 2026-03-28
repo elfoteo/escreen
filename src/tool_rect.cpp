@@ -20,16 +20,16 @@ static void rect_on_mousemove(struct escreen_state *state, double x, double y) {
 static void rect_on_mouseup(struct escreen_state *state, double x, double y) {
 	ex = x;
 	ey = y;
-	action_t action = {
-		.type = TOOL_RECTANGLE,
-		.r = state->sketching.r,
-		.g = state->sketching.g,
-		.b = state->sketching.b,
-		.a = state->sketching.a,
-		.thickness = state->sketching.thickness,
-		.filled = state->sketching.filled,
-		.x1 = sx, .y1 = sy, .x2 = ex, .y2 = ey
-	};
+	action_t action = {};
+	action.type = TOOL_RECTANGLE;
+	action.r = state->sketching.r;
+	action.g = state->sketching.g;
+	action.b = state->sketching.b;
+	action.a = state->sketching.a;
+	action.thickness = state->sketching.thickness;
+	action.filled = state->sketching.filled;
+	action.x1 = sx; action.y1 = sy; action.x2 = ex; action.y2 = ey;
+
 	tools_add_action(state, action);
 }
 

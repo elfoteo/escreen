@@ -19,6 +19,7 @@ typedef enum {
 	TOOL_RECTANGLE,
 	TOOL_ARROW,
 	TOOL_STAMP,
+	TOOL_TEXT,
 	TOOL_COUNT
 } tool_type_t;
 
@@ -41,6 +42,9 @@ typedef struct {
 
 	// For stamp
 	int stamp_number;
+	
+	// For text
+	char *text;
 } action_t;
 
 struct tool {
@@ -88,6 +92,7 @@ void tools_handle_motion(struct escreen_state *state, double x, double y);
 bool tools_is_on_toolbar(struct escreen_state *state, double x, double y);
 
 void tools_add_action(struct escreen_state *state, action_t action);
+void tools_handle_key(struct escreen_state *state, uint32_t sym, const char *utf8, bool shift_down, bool ctrl_down);
 
 #ifdef __cplusplus
 }

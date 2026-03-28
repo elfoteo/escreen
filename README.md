@@ -1,10 +1,10 @@
 # Escreen
 
-A professional Wayland screenshot tool with built-in sketching capabilities (Brush, Blur, Line, Rectangle, Arrow).
+A simple Wayland screenshot tool with built-in sketching capabilities.
 
 ## Features
 - **Interactive Sketching**: Draw on your selection before saving.
-- **Modular Tools**: Professional-grade brush, blur, and shape tools.
+- **Modular Tools**: brush, blur, arrow and shape tools.
 - **Configurable**: Fully themeable UI and automatic saving.
 
 ## Getting Started
@@ -61,7 +61,6 @@ color_button_hover=#404040FF
 - `color_accent`: Used for selection borders and active tool highlights.
 - `color_toolbar_bg`: The background color of the floating toolbar.
 - `color_button_hover`: The background of a button when hovered.
-- `color_tool_preview`: The color of the size preview circle at the cursor.
 
 ## License
 MIT

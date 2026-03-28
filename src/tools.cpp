@@ -16,6 +16,7 @@ extern "C" tool_interface_t tool_line;
 extern "C" tool_interface_t tool_rectangle;
 extern "C" tool_interface_t tool_arrow;
 extern "C" tool_interface_t tool_stamp;
+extern "C" tool_interface_t tool_text;
 
 int* tool_stamp_get_counter_ptr();
 
@@ -34,8 +35,10 @@ void tools_init(struct escreen_state *state) {
 	state->sketching.tools[TOOL_RECTANGLE] = &tool_rectangle;
 	state->sketching.tools[TOOL_ARROW] = &tool_arrow;
 	state->sketching.tools[TOOL_STAMP] = &tool_stamp;
+	state->sketching.tools[TOOL_TEXT] = &tool_text;
 	
 	state->sketching.active_tool = state->sketching.tools[TOOL_SELECT];
+	state->sketching.text_buffer[0] = '\0';
 	
 	state->sketching.r = 1.0f; state->sketching.g = 0.0f; state->sketching.b = 0.0f; state->sketching.a = 1.0f;
 	state->sketching.thickness = 5.0f;
@@ -62,7 +65,8 @@ void tools_init(struct escreen_state *state) {
 void tools_cleanup(struct escreen_state *state) {
 	ImGui_ImplCairo_DestroyFontsTexture();
 	for (size_t i = 0; i < state->sketching.history_count; i++) {
-		free(state->sketching.history[i].points);
+		if (state->sketching.history[i].points) free(state->sketching.history[i].points);
+		if (state->sketching.history[i].text) free(state->sketching.history[i].text);
 	}
 	free(state->sketching.history);
 	if (state->sketching.history_layer) {
@@ -199,6 +203,10 @@ static bool IconButton(struct escreen_state *state, const char* tooltip, tool_ty
     } else if (type == TOOL_STAMP) {
         draw->AddCircleFilled(ImVec2(c.x, c.y), 8.0f, fg_col);
         draw->AddText(ImVec2(c.x - 3, c.y - 7), IM_COL32(255, 255, 255, 255), "1");
+    } else if (type == TOOL_TEXT) {
+        // Clean 'T' icon: top bar and stem only
+        draw->AddLine(ImVec2(c.x - 7, c.y - 7), ImVec2(c.x + 7, c.y - 7), fg_col, 2.0f); // Top bar
+        draw->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 8), fg_col, 2.0f);         // Stem
     }
     
     return clicked;
@@ -240,7 +248,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 	if (ImGui::Begin("Escreen Sketching", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar)) {
 		bool vert = state->sketching.is_vertical;
 		tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
-		bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill;
+		bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill || tool->type == TOOL_STAMP || tool->type == TOOL_TEXT;
 
 		if (vert) ImGui::BeginGroup();
 
@@ -256,19 +264,20 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		if (!vert) ImGui::SameLine();
 		if (IconButton(state, "Arrow Tool", TOOL_ARROW, tool == state->sketching.tools[TOOL_ARROW])) tools_set_active(state, TOOL_ARROW);
 		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Number Stamps", TOOL_STAMP, tool == state->sketching.tools[TOOL_STAMP])) tools_set_active(state, TOOL_STAMP);
-
-		if (vert) {
-			ImGui::EndGroup();
-			if (has_options) {
+		if (IconButton(state, "Stamp Tool", TOOL_STAMP, tool == state->sketching.tools[TOOL_STAMP])) tools_set_active(state, TOOL_STAMP);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Text Tool", TOOL_TEXT, tool == state->sketching.tools[TOOL_TEXT])) tools_set_active(state, TOOL_TEXT);
+		
+		if (has_options) {
+			if (vert) {
+				ImGui::EndGroup();
 				ImGui::SameLine();
 				ImGui::BeginGroup();
+			} else {
+				ImGui::Separator();
+				ImGui::SameLine();
 			}
-		}
 
-		if (has_options) {
-			if (!vert) ImGui::Spacing();
-			
 			if (tool->show_color) {
 				float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
 				ImGui::PushItemWidth(vert ? 95 : 120);
@@ -279,7 +288,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
-				ImGui::Spacing();
+				if (vert) ImGui::Spacing(); else ImGui::SameLine();
 			}
 
 			if (tool->show_thickness) {
@@ -290,7 +299,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size");
-				ImGui::Spacing();
+				if (vert) ImGui::Spacing(); else ImGui::SameLine();
 			}
 
 			if (tool->show_hardness) {
@@ -301,7 +310,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hardness");
-				ImGui::Spacing();
+				if (vert) ImGui::Spacing(); else ImGui::SameLine();
 			}
 
 			if (tool->show_fill) {
@@ -312,7 +321,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				}
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fill");
-				ImGui::Spacing();
+				if (vert) ImGui::Spacing(); else ImGui::SameLine();
 			}
 
 			if (tool->type == TOOL_STAMP) {
@@ -328,29 +337,28 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				if (ImGui::Button("Reset to 1")) {
 					*counter_ptr = 1;
 				}
-				ImGui::Spacing();
+				if (vert) ImGui::Spacing(); else ImGui::SameLine();
 			}
-			
-			if (vert) ImGui::EndGroup();
-		}
+
+		if (vert) ImGui::EndGroup();
+	} else if (vert) {
+		ImGui::EndGroup();
+	}
 
 		// Responsive positioning based on ACTUAL size
 		ImVec2 actual_size = ImGui::GetWindowSize();
 		double nx, ny;
 		bool nvert;
 		
-		// Determine dimensions for both horizontal and vertical variants to pass to placement logic
 		double current_w = (double)actual_size.x;
 		double current_h = (double)actual_size.y;
 		double alt_w, alt_h;
 
 		if (state->sketching.is_vertical) {
-			// Current is vertical, alt is horizontal
 			alt_w = has_options ? 280 : 180;
 			alt_h = has_options ? 100 : 50;
 			get_toolbar_placement(state, alt_w, alt_h, current_w, current_h, &nx, &ny, &nvert);
 		} else {
-			// Current is horizontal, alt is vertical
 			alt_w = has_options ? 150 : 55;
 			alt_h = 240;
 			get_toolbar_placement(state, current_w, current_h, alt_w, alt_h, &nx, &ny, &nvert);
@@ -364,6 +372,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 	ImGui::Render();
 	ImGui_ImplCairo_RenderDrawData(cr, ImGui::GetDrawData());
 }
+
 
 extern "C" {
 
@@ -404,7 +413,8 @@ void tools_update_history(struct escreen_state *state) {
 }
 
 void tools_draw(struct escreen_state *state, cairo_t *cr) {
-	if (state->sketching.drawing && state->sketching.active_tool) {
+	if ((state->sketching.drawing || state->sketching.is_text_editing) && 
+	    state->sketching.active_tool && state->sketching.active_tool->draw_preview) {
 		state->sketching.active_tool->draw_preview(state, cr);
 	}
 }
@@ -447,7 +457,8 @@ void tools_handle_motion(struct escreen_state *state, double x, double y) {
 
 void tools_add_action(struct escreen_state *state, action_t action) {
 	for (size_t i = state->sketching.history_undo_pos; i < state->sketching.history_count; i++) {
-		free(state->sketching.history[i].points);
+		if (state->sketching.history[i].points) free(state->sketching.history[i].points);
+		if (state->sketching.history[i].text) free(state->sketching.history[i].text);
 	}
 	state->sketching.history_count = state->sketching.history_undo_pos;
 
@@ -457,6 +468,117 @@ void tools_add_action(struct escreen_state *state, action_t action) {
 	}
 	state->sketching.history[state->sketching.history_count++] = action;
 	state->sketching.history_undo_pos = state->sketching.history_count;
+}
+
+static bool is_word_char(char c) {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
+void tools_handle_key(struct escreen_state *state, uint32_t sym, const char *utf8, bool shift_down, bool ctrl_down) {
+	if (!state->sketching.is_text_editing) return;
+
+	char *buf = state->sketching.text_buffer;
+	int *pos = &state->sketching.text_cursor_pos;
+	size_t len = strlen(buf);
+
+	if (sym == XKB_KEY_Return) {
+		if (shift_down) {
+			// Insert newline at cursor
+			if (len + 1 < sizeof(state->sketching.text_buffer)) {
+				memmove(buf + *pos + 1, buf + *pos, len - *pos + 1);
+				buf[*pos] = '\n';
+				(*pos)++;
+			}
+			return;
+		}
+		// Commit
+		if (buf[0] != '\0') {
+			action_t action = {};
+			action.type = TOOL_TEXT;
+			action.r = state->sketching.r;
+			action.g = state->sketching.g;
+			action.b = state->sketching.b;
+			action.a = state->sketching.a;
+			action.thickness = state->sketching.thickness;
+			action.x1 = state->sketching.text_x;
+			action.y1 = state->sketching.text_y;
+			action.text = strdup(buf);
+			tools_add_action(state, action);
+		}
+		state->sketching.is_text_editing = false;
+	} else if (sym == XKB_KEY_Escape) {
+		state->sketching.is_text_editing = false;
+		buf[0] = '\0';
+		*pos = 0;
+	} else if (sym == XKB_KEY_BackSpace) {
+		if (*pos > 0) {
+			int to_delete = 1;
+			if (ctrl_down) {
+				int i = *pos - 1;
+				while (i > 0 && !is_word_char(buf[i])) i--;
+				while (i > 0 && is_word_char(buf[i])) i--;
+				if (i > 0) i++; // stay after the non-word char
+				to_delete = *pos - i;
+			} else {
+				// UTF-8 aware single backspace
+				int i = *pos - 1;
+				while (i > 0 && (buf[i] & 0xC0) == 0x80) i--;
+				to_delete = *pos - i;
+			}
+			memmove(buf + *pos - to_delete, buf + *pos, len - *pos + 1);
+			*pos -= to_delete;
+		}
+	} else if (sym == XKB_KEY_Delete) {
+		if ((size_t)*pos < len) {
+			int to_delete = 1;
+			if (ctrl_down) {
+				int i = *pos;
+				while ((size_t)i < len && !is_word_char(buf[i])) i++;
+				while ((size_t)i < len && is_word_char(buf[i])) i++;
+				to_delete = i - *pos;
+			} else {
+				// UTF-8 aware single delete
+				int i = *pos + 1;
+				while ((size_t)i < len && (buf[i] & 0xC0) == 0x80) i++;
+				to_delete = i - *pos;
+			}
+			memmove(buf + *pos, buf + *pos + to_delete, len - (*pos + to_delete) + 1);
+		}
+	} else if (sym == XKB_KEY_Left) {
+		if (*pos > 0) {
+			if (ctrl_down) {
+				int i = *pos - 1;
+				while (i > 0 && !is_word_char(buf[i])) i--;
+				while (i > 0 && is_word_char(buf[i])) i--;
+				if (i > 0) i++;
+				*pos = i;
+			} else {
+				int i = *pos - 1;
+				while (i > 0 && (buf[i] & 0xC0) == 0x80) i--;
+				*pos = i;
+			}
+		}
+	} else if (sym == XKB_KEY_Right) {
+		if ((size_t)*pos < len) {
+			if (ctrl_down) {
+				int i = *pos;
+				while ((size_t)i < len && !is_word_char(buf[i])) i++;
+				while ((size_t)i < len && is_word_char(buf[i])) i++;
+				*pos = i;
+			} else {
+				int i = *pos + 1;
+				while ((size_t)i < len && (buf[i] & 0xC0) == 0x80) i++;
+				*pos = i;
+			}
+		}
+	} else if (utf8 && utf8[0] != '\0') {
+		size_t utf8_len = strlen(utf8);
+		if (len + utf8_len < sizeof(state->sketching.text_buffer)) {
+			memmove(buf + *pos + utf8_len, buf + *pos, len - *pos + 1);
+			memcpy(buf + *pos, utf8, utf8_len);
+			*pos += utf8_len;
+		}
+	}
 }
 
 } // extern "C"

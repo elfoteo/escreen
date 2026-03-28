@@ -1,8 +1,10 @@
 #define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <assert.h>
@@ -11,6 +13,8 @@
 #include <wayland-cursor.h>
 #include <cairo.h>
 #include <xkbcommon/xkbcommon.h>
+#include <poll.h>
+#include <stdbool.h>
 #include "escreen.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
@@ -31,6 +35,12 @@ static void finalize_buffer(struct pool_buffer *pool) {
 	if (pool->pixman) pixman_image_unref(pool->pixman);
 	if (pool->data) munmap(pool->data, pool->size);
 	memset(pool, 0, sizeof(*pool));
+}
+
+static uint64_t get_time_ms() {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
 // Forward declaration needed since buffer_handle_release calls render()
@@ -233,10 +243,9 @@ static void render(struct escreen_output *output) {
 	wl_surface_set_buffer_scale(output->surface, output->scale);
 	wl_surface_commit(output->surface);
 	output->dirty = false;
-	
-	if (state->sketching.ui_layout_frames > 0) {
+	if (state->sketching.ui_layout_frames > 0 || state->sketching.is_text_editing) {
 		output->dirty = true;
-		state->sketching.ui_layout_frames--;
+		if (state->sketching.ui_layout_frames > 0) state->sketching.ui_layout_frames--;
 	}
 }
 
@@ -245,7 +254,10 @@ static void frame_done(void *data, struct wl_callback *callback, uint32_t time) 
 	struct escreen_output *output = data;
 	wl_callback_destroy(callback);
 	output->frame_callback = NULL;
-	if (output->dirty) render(output);
+
+	if (output->dirty) {
+		render(output);
+	}
 }
 
 static const struct wl_callback_listener frame_listener = { .done = frame_done };
@@ -568,18 +580,63 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keyboard,
 	seat->xkb.state = xkb_state_new(seat->xkb.keymap);
 }
 
-static void keyboard_enter(void *data, struct wl_keyboard *keyboard,
-		uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
-	(void)data; (void)keyboard; (void)serial; (void)surface; (void)keys;
+static void keyboard_repeat_info(void *data, struct wl_keyboard *keyboard,
+		int32_t rate, int32_t delay) {
+	struct escreen_seat *seat = data;
+	(void)keyboard;
+	seat->repeat.rate = rate; // keys per second
+	seat->repeat.delay = delay; // ms
+}
+
+static void keyboard_leave(void *data, struct wl_keyboard *keyboard,
+		uint32_t serial, struct wl_surface *surface) {
+	struct escreen_seat *seat = data;
+	(void)keyboard; (void)serial; (void)surface;
+	seat->repeat.active = false;
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *keyboard,
-		uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+		uint32_t serial, uint32_t time, uint32_t key, uint32_t key_state) {
 	struct escreen_seat *seat = data;
 	(void)keyboard; (void)serial; (void)time;
-	if (state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
-
+	if (key_state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+		if (seat->repeat.key == key) {
+			seat->repeat.active = false;
+		}
+		return;
+	}
+	
 	xkb_keysym_t sym = xkb_state_key_get_one_sym(seat->xkb.state, key + 8);
+	uint64_t now_ms = get_time_ms();
+	
+	if (seat->state->sketching.is_text_editing) {
+		bool shift_down = xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE);
+		bool ctrl_down = xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE);
+		char utf8[128];
+		xkb_state_key_get_utf8(seat->xkb.state, key + 8, utf8, sizeof(utf8));
+		
+		seat->state->sketching.last_key_time = now_ms;
+		tools_handle_key(seat->state, sym, utf8, shift_down, ctrl_down);
+		
+		// Start repeat only for keys that produce text or are navigation keys
+		if ((utf8[0] != '\0') || 
+			(sym == XKB_KEY_BackSpace || sym == XKB_KEY_Delete || 
+			 sym == XKB_KEY_Left || sym == XKB_KEY_Right || 
+			 sym == XKB_KEY_Up || sym == XKB_KEY_Down)) {
+			
+			int32_t delay = seat->repeat.delay > 0 ? seat->repeat.delay : 500;
+			seat->repeat.active = true;
+			seat->repeat.key = key;
+			seat->repeat.sym = sym;
+			strncpy(seat->repeat.utf8, utf8, sizeof(seat->repeat.utf8));
+			seat->repeat.utf8[sizeof(seat->repeat.utf8)-1] = '\0';
+			seat->repeat.last_ms = now_ms + delay;
+		}
+
+		update_dirty_outputs(seat);
+		return;
+	}
+
 	if (sym == XKB_KEY_Return || sym == XKB_KEY_d) {
 		if (seat->has_selection) seat->state->running = false;
 	} else if (sym == XKB_KEY_Escape) {
@@ -617,11 +674,11 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *keyboard,
 
 const struct wl_keyboard_listener keyboard_listener = {
 	.keymap = keyboard_keymap,
-	.enter = keyboard_enter,
-	.leave = (void*)noop,
+	.enter = (void*)noop,
+	.leave = keyboard_leave,
 	.key = keyboard_key,
 	.modifiers = keyboard_modifiers,
-	.repeat_info = (void*)noop,
+	.repeat_info = keyboard_repeat_info,
 };
 
 const struct wl_pointer_listener pointer_listener = {
@@ -635,6 +692,39 @@ const struct wl_pointer_listener pointer_listener = {
 	.axis_stop = (void*)noop,
 	.axis_discrete = (void*)noop,
 };
+
+static int dispatch_repeats(struct escreen_state *state) {
+	uint64_t now_ms = get_time_ms();
+	struct escreen_seat *seat;
+	uint64_t next_wait = 1000;
+	bool any_repeat = false;
+
+	wl_list_for_each(seat, &state->seats, link) {
+		if (seat->repeat.active) {
+			any_repeat = true;
+			if (now_ms >= seat->repeat.last_ms) {
+				bool shift_down = xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE);
+				bool ctrl_down = xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE);
+				
+				state->sketching.last_key_time = now_ms;
+				tools_handle_key(state, seat->repeat.sym, seat->repeat.utf8, shift_down, ctrl_down);
+				
+				int32_t rate = seat->repeat.rate > 0 ? seat->repeat.rate : 25;
+				uint32_t interval = 1000 / rate;
+				if (interval < 1) interval = 1;
+				seat->repeat.last_ms += interval;
+				if (seat->repeat.last_ms < now_ms) seat->repeat.last_ms = now_ms + interval;
+				
+				update_dirty_outputs(seat);
+				next_wait = 0; // Trigger again ASAP or at interval
+			} else {
+				uint64_t diff = seat->repeat.last_ms - now_ms;
+				if (diff < next_wait) next_wait = diff;
+			}
+		}
+	}
+	return any_repeat ? (int)next_wait : -1;
+}
 
 void selection_run(struct escreen_state *state) {
 	struct escreen_output *output;
@@ -653,7 +743,30 @@ void selection_run(struct escreen_state *state) {
 		wl_surface_commit(output->surface);
 	}
 
-	while (state->running && wl_display_dispatch(state->display) != -1) {
+	struct pollfd fds[1] = {
+		{ wl_display_get_fd(state->display), POLLIN, 0 }
+	};
+
+	while (state->running) {
+		while (wl_display_prepare_read(state->display) != 0) {
+			wl_display_dispatch_pending(state->display);
+		}
+
+		if (wl_display_flush(state->display) < 0) {
+			wl_display_cancel_read(state->display);
+			break;
+		}
+
+		int timeout = dispatch_repeats(state);
+		if (poll(fds, 1, timeout) > 0) {
+			wl_display_read_events(state->display);
+			wl_display_dispatch_pending(state->display);
+		} else {
+			wl_display_cancel_read(state->display);
+		}
+
+		// Non-blocking catch-all for any other pending events
+		wl_display_dispatch_pending(state->display);
 	}
 
 	wl_list_for_each(output, &state->outputs, link) {

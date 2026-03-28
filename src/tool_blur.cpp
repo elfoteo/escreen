@@ -6,33 +6,109 @@
 static point_t *current_points = NULL;
 static size_t num_points = 0;
 static size_t capacity = 0;
+static cairo_surface_t *blur_mask_surface = NULL;
+static cairo_surface_t *blurred_cache_surface = NULL;
+static float last_blur_amount = -1.0f;
+
+static void ensure_blur_cache(struct escreen_state *state, double amount) {
+	if (blurred_cache_surface && last_blur_amount == (float)amount) return;
+	
+	if (blurred_cache_surface) cairo_surface_destroy(blurred_cache_surface);
+	last_blur_amount = (float)amount;
+
+	if (!state->global_capture) return;
+
+	int w = cairo_image_surface_get_width(state->global_capture);
+	int h = cairo_image_surface_get_height(state->global_capture);
+	
+	int step = (int)round(1.0 + amount * 19.0);
+	if (step < 1) step = 1;
+	if (step > 20) step = 20;
+	double scale = 1.0 / step;
+
+	int sw = (int)ceil(w * scale);
+	int sh = (int)ceil(h * scale);
+	if (sw < 1) sw = 1;
+	if (sh < 1) sh = 1;
+
+	// Create downscaled version
+	cairo_surface_t *small = cairo_image_surface_create(CAIRO_FORMAT_RGB24, sw, sh);
+	cairo_t *scr = cairo_create(small);
+	cairo_scale(scr, scale, scale);
+	cairo_set_source_surface(scr, state->global_capture, 0, 0);
+	cairo_paint(scr);
+	if (state->sketching.history_layer) {
+		cairo_set_source_surface(scr, state->sketching.history_layer, 0, 0);
+		cairo_paint(scr);
+	}
+	cairo_destroy(scr);
+
+	// Create upscaled blurred cache
+	blurred_cache_surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, w, h);
+	cairo_t *bcr = cairo_create(blurred_cache_surface);
+	cairo_scale(bcr, (double)step, (double)step);
+	cairo_set_source_surface(bcr, small, 0, 0);
+	cairo_pattern_set_filter(cairo_get_source(bcr), CAIRO_FILTER_BILINEAR);
+	cairo_paint(bcr);
+	cairo_destroy(bcr);
+	cairo_surface_destroy(small);
+}
 
 static void blur_on_mousedown(struct escreen_state *state, double x, double y) {
-	(void)state;
 	num_points = 0;
 	capacity = 16;
 	current_points = (point_t*)malloc(capacity * sizeof(point_t));
 	current_points[num_points++] = (point_t){x, y};
+
+	ensure_blur_cache(state, state->sketching.hardness);
+
+	if (!blur_mask_surface && state->global_capture) {
+		int w = cairo_image_surface_get_width(state->global_capture);
+		int h = cairo_image_surface_get_height(state->global_capture);
+		blur_mask_surface = cairo_image_surface_create(CAIRO_FORMAT_A8, w, h);
+	}
+
+	if (blur_mask_surface) {
+		cairo_t *cr = cairo_create(blur_mask_surface);
+		cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+		cairo_paint(cr);
+		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		cairo_arc(cr, x - state->total_min_x, y - state->total_min_y, state->sketching.thickness / 2.0, 0, 2 * M_PI);
+		cairo_fill(cr);
+		cairo_destroy(cr);
+	}
 }
 
 static void blur_on_mousemove(struct escreen_state *state, double x, double y) {
-	(void)state;
 	if (num_points >= capacity) {
 		capacity *= 2;
 		current_points = (point_t*)realloc(current_points, capacity * sizeof(point_t));
 	}
 	current_points[num_points++] = (point_t){x, y};
+
+	if (blur_mask_surface && num_points >= 2) {
+		cairo_t *cr = cairo_create(blur_mask_surface);
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		cairo_set_line_width(cr, state->sketching.thickness);
+		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+		cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+		cairo_move_to(cr, current_points[num_points-2].x - state->total_min_x, current_points[num_points-2].y - state->total_min_y);
+		cairo_line_to(cr, x - state->total_min_x, y - state->total_min_y);
+		cairo_stroke(cr);
+		cairo_destroy(cr);
+	}
 }
 
 static void blur_on_mouseup(struct escreen_state *state, double x, double y) {
 	(void)x; (void)y;
-	action_t action = {
-		.type = TOOL_BLUR,
-		.thickness = state->sketching.thickness,
-		.hardness = state->sketching.hardness,
-		.points = current_points,
-		.num_points = num_points
-	};
+	action_t action = {};
+	action.type = TOOL_BLUR;
+	action.thickness = state->sketching.thickness;
+	action.hardness = state->sketching.hardness;
+	action.points = current_points;
+	action.num_points = num_points;
+
 	tools_add_action(state, action);
 	current_points = NULL;
 	num_points = 0;
@@ -149,7 +225,12 @@ static void render_blur_internal(struct escreen_state *state, cairo_t *cr, point
 }
 
 static void blur_draw_preview(struct escreen_state *state, cairo_t *cr) {
-	render_blur_internal(state, cr, current_points, num_points, state->sketching.thickness, state->sketching.hardness);
+	if (blurred_cache_surface && blur_mask_surface) {
+		cairo_save(cr);
+		cairo_set_source_surface(cr, blurred_cache_surface, state->total_min_x, state->total_min_y);
+		cairo_mask_surface(cr, blur_mask_surface, state->total_min_x, state->total_min_y);
+		cairo_restore(cr);
+	}
 }
 
 static void blur_render_action(struct escreen_state *state, cairo_t *cr, action_t *action) {

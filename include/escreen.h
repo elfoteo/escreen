@@ -130,6 +130,11 @@ struct escreen_state {
 		bool drawing;
 		bool is_vertical;
 		int ui_layout_frames;
+		char text_buffer[256];
+		int text_cursor_pos;
+		bool is_text_editing;
+		double text_x, text_y;
+		uint64_t last_key_time;
 	} sketching;
 
 	escreen_config_t config;
@@ -187,6 +192,16 @@ struct escreen_seat {
 		struct xkb_keymap *keymap;
 		struct xkb_state *state;
 	} xkb;
+
+	struct {
+		uint32_t key;
+		uint32_t sym;
+		char utf8[32];
+		uint64_t last_ms;
+		int32_t delay;
+		int32_t rate;
+		bool active;
+	} repeat;
 };
 
 // Functions
