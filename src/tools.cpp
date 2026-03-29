@@ -250,34 +250,28 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
 		bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill || tool->type == TOOL_STAMP || tool->type == TOOL_TEXT;
 
-		if (vert) ImGui::BeginGroup();
+		auto draw_icons = [&]() {
+			if (vert) ImGui::BeginGroup();
+			if (IconButton(state, "Select Area", TOOL_SELECT, tool == state->sketching.tools[TOOL_SELECT])) tools_set_active(state, TOOL_SELECT);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Brush Tool", TOOL_BRUSH, tool == state->sketching.tools[TOOL_BRUSH])) tools_set_active(state, TOOL_BRUSH);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Blur Tool", TOOL_BLUR, tool == state->sketching.tools[TOOL_BLUR])) tools_set_active(state, TOOL_BLUR);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Line Tool", TOOL_LINE, tool == state->sketching.tools[TOOL_LINE])) tools_set_active(state, TOOL_LINE);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Rectangle Tool", TOOL_RECTANGLE, tool == state->sketching.tools[TOOL_RECTANGLE])) tools_set_active(state, TOOL_RECTANGLE);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Arrow Tool", TOOL_ARROW, tool == state->sketching.tools[TOOL_ARROW])) tools_set_active(state, TOOL_ARROW);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Stamp Tool", TOOL_STAMP, tool == state->sketching.tools[TOOL_STAMP])) tools_set_active(state, TOOL_STAMP);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Text Tool", TOOL_TEXT, tool == state->sketching.tools[TOOL_TEXT])) tools_set_active(state, TOOL_TEXT);
+			if (vert) ImGui::EndGroup();
+		};
 
-		if (IconButton(state, "Select Area", TOOL_SELECT, tool == state->sketching.tools[TOOL_SELECT])) tools_set_active(state, TOOL_SELECT);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Brush Tool", TOOL_BRUSH, tool == state->sketching.tools[TOOL_BRUSH])) tools_set_active(state, TOOL_BRUSH);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Blur Tool", TOOL_BLUR, tool == state->sketching.tools[TOOL_BLUR])) tools_set_active(state, TOOL_BLUR);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Line Tool", TOOL_LINE, tool == state->sketching.tools[TOOL_LINE])) tools_set_active(state, TOOL_LINE);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Rectangle Tool", TOOL_RECTANGLE, tool == state->sketching.tools[TOOL_RECTANGLE])) tools_set_active(state, TOOL_RECTANGLE);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Arrow Tool", TOOL_ARROW, tool == state->sketching.tools[TOOL_ARROW])) tools_set_active(state, TOOL_ARROW);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Stamp Tool", TOOL_STAMP, tool == state->sketching.tools[TOOL_STAMP])) tools_set_active(state, TOOL_STAMP);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Text Tool", TOOL_TEXT, tool == state->sketching.tools[TOOL_TEXT])) tools_set_active(state, TOOL_TEXT);
-		
-		if (has_options) {
-			if (vert) {
-				ImGui::EndGroup();
-				ImGui::SameLine();
-				ImGui::BeginGroup();
-			} else {
-				ImGui::Separator();
-				ImGui::SameLine();
-			}
-
+		auto draw_options = [&]() {
+			if (vert) ImGui::BeginGroup();
 			if (tool->show_color) {
 				float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
 				ImGui::PushItemWidth(vert ? 95 : 120);
@@ -338,11 +332,37 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				}
 				if (vert) ImGui::Spacing(); else ImGui::SameLine();
 			}
+			if (vert) ImGui::EndGroup();
+		};
 
-		if (vert) ImGui::EndGroup();
-	} else if (vert) {
-		ImGui::EndGroup();
-	}
+		bool rev_x = (pivot.x == 1.0f);
+		bool rev_y = (pivot.y == 1.0f);
+
+		if (vert) {
+			if (rev_x && has_options) {
+				draw_options();
+				ImGui::SameLine();
+				draw_icons();
+			} else {
+				draw_icons();
+				if (has_options) {
+					ImGui::SameLine();
+					draw_options();
+				}
+			}
+		} else {
+			if (rev_y && has_options) {
+				draw_options();
+				ImGui::Separator();
+				draw_icons();
+			} else {
+				draw_icons();
+				if (has_options) {
+					ImGui::Separator();
+					draw_options();
+				}
+			}
+		}
 
 		// Responsive positioning based on ACTUAL size
 		ImVec2 actual_size = ImGui::GetWindowSize();
