@@ -333,7 +333,6 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 				ImGui::PopItemWidth();
 				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next Number");
 				
-				ImGui::SameLine();
 				if (ImGui::Button("Reset to 1")) {
 					*counter_ptr = 1;
 				}

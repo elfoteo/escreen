@@ -68,10 +68,17 @@ static void brush_on_mousedown(struct escreen_state *state, double x, double y) 
 	}
 
 	if (brush_scratch_surface) {
+		int max_scale = 1;
+		struct escreen_output *out;
+		wl_list_for_each(out, &state->outputs, link) {
+			if (out->scale > max_scale) max_scale = out->scale;
+		}
+
 		cairo_t *cr = cairo_create(brush_scratch_surface);
 		cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
 		cairo_paint(cr);
 		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+		cairo_scale(cr, (double)max_scale, (double)max_scale);
 		
 		double thickness = state->sketching.thickness;
 		double hardness = state->sketching.hardness;
@@ -98,7 +105,14 @@ static void brush_on_mousemove(struct escreen_state *state, double x, double y) 
 	current_points[num_points++] = (point_t){x, y};
 
 	if (brush_scratch_surface && num_points >= 2) {
+		int max_scale = 1;
+		struct escreen_output *out;
+		wl_list_for_each(out, &state->outputs, link) {
+			if (out->scale > max_scale) max_scale = out->scale;
+		}
+
 		cairo_t *cr = cairo_create(brush_scratch_surface);
+		cairo_scale(cr, (double)max_scale, (double)max_scale);
 		
 		double r = state->sketching.r;
 		double g = state->sketching.g;

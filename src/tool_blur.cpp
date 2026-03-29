@@ -21,8 +21,8 @@ static void ensure_blur_cache(struct escreen_state *state, double amount) {
 	int w = cairo_image_surface_get_width(state->global_capture);
 	int h = cairo_image_surface_get_height(state->global_capture);
 	
-	int step = (int)round(1.0 + amount * 19.0);
-	if (step < 1) step = 1;
+	int step = (int)round(2.0 + amount * 18.0);
+	if (step < 2) step = 2;
 	if (step > 20) step = 20;
 	double scale = 1.0 / step;
 
@@ -69,10 +69,17 @@ static void blur_on_mousedown(struct escreen_state *state, double x, double y) {
 	}
 
 	if (blur_mask_surface) {
+		int max_scale = 1;
+		struct escreen_output *out;
+		wl_list_for_each(out, &state->outputs, link) {
+			if (out->scale > max_scale) max_scale = out->scale;
+		}
+
 		cairo_t *cr = cairo_create(blur_mask_surface);
 		cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
 		cairo_paint(cr);
 		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+		cairo_scale(cr, (double)max_scale, (double)max_scale);
 		cairo_set_source_rgba(cr, 1, 1, 1, 1);
 		cairo_arc(cr, x - state->total_min_x, y - state->total_min_y, state->sketching.thickness / 2.0, 0, 2 * M_PI);
 		cairo_fill(cr);
@@ -88,7 +95,14 @@ static void blur_on_mousemove(struct escreen_state *state, double x, double y) {
 	current_points[num_points++] = (point_t){x, y};
 
 	if (blur_mask_surface && num_points >= 2) {
+		int max_scale = 1;
+		struct escreen_output *out;
+		wl_list_for_each(out, &state->outputs, link) {
+			if (out->scale > max_scale) max_scale = out->scale;
+		}
+
 		cairo_t *cr = cairo_create(blur_mask_surface);
+		cairo_scale(cr, (double)max_scale, (double)max_scale);
 		cairo_set_source_rgba(cr, 1, 1, 1, 1);
 		cairo_set_line_width(cr, state->sketching.thickness);
 		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
@@ -146,8 +160,8 @@ static void render_blur_internal(struct escreen_state *state, cairo_t *cr, point
 
 	// Blur scale decides the downscale factor.
 	// Force it to be an exact fraction (1/step) to lock the sampling grid perfectly.
-	int step = (int)round(1.0 + amount * 19.0);
-	if (step < 1) step = 1;
+	int step = (int)round(2.0 + amount * 18.0);
+	if (step < 2) step = 2;
 	if (step > 20) step = 20;
 	double scale = 1.0 / step;
 
