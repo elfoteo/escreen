@@ -31,6 +31,10 @@ make -j$(nproc)
 - `-d <delay>`: Delay in seconds.
 - `-h`: Show help.
 
+### Hyprland
+To integrate it with hyprland just add a line in the configuration:
+`bind = SUPER SHIFT, S, exec, ~/path/to/escreen/launch.sh`
+
 ## Customization
 
 Escreen automatically generates a default configuration file at `~/.config/escreen/config` on its first run.

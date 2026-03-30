@@ -400,16 +400,15 @@ void tools_update_history(struct escreen_state *state) {
 		int w = cairo_image_surface_get_width(state->global_capture);
 		int h = cairo_image_surface_get_height(state->global_capture);
 		state->sketching.history_layer = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+		// Match the device scale of global_capture so the overlay maps both surfaces
+		// identically: 1 logical unit = max_scale_factor pixels.
+		cairo_surface_set_device_scale(state->sketching.history_layer,
+			state->max_scale_factor, state->max_scale_factor);
 	}
 	
 	if (state->sketching.history_layer) {
 		if (state->sketching.history_rendered_count != state->sketching.history_undo_pos) {
 			cairo_t *lcr = cairo_create(state->sketching.history_layer);
-			int max_scale = 1;
-			struct escreen_output *o;
-			wl_list_for_each(o, &state->outputs, link) {
-				if (o->scale > max_scale) max_scale = o->scale;
-			}
 			
 			if (state->sketching.history_undo_pos < state->sketching.history_rendered_count) {
 				cairo_set_operator(lcr, CAIRO_OPERATOR_CLEAR);
@@ -418,7 +417,9 @@ void tools_update_history(struct escreen_state *state) {
 				state->sketching.history_rendered_count = 0;
 			}
 			
-			cairo_scale(lcr, (double)max_scale, (double)max_scale);
+			// Use max_scale_factor (true physical/logical ratio) — not o->scale which is
+			// always 1 for fractional scaling and would place strokes in the wrong position.
+			cairo_scale(lcr, state->max_scale_factor, state->max_scale_factor);
 			cairo_translate(lcr, -state->total_min_x, -state->total_min_y);
 			
 			for (size_t i = state->sketching.history_rendered_count; i < state->sketching.history_undo_pos; i++) {
