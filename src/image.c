@@ -82,7 +82,29 @@ void image_save(struct escreen_state *state, void *data, int32_t width, int32_t 
 	if (state->save_file) {
 		char filename[512];
 		if (state->manual_save_path) {
-			snprintf(filename, sizeof(filename), "%s", state->manual_save_path);
+			const char *path = state->manual_save_path;
+			size_t plen = strlen(path);
+			struct stat st;
+			bool is_dir = (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+			           || (plen > 0 && path[plen - 1] == '/');
+
+			if (is_dir) {
+				// Path is (or is intended to be) a directory — create it and generate a filename
+				mkdir(path, 0755);
+				time_t now = time(NULL);
+				struct tm *t = localtime(&now);
+				char name[256];
+				const char *fmt = (state->config.auto_save_filename_format && state->config.auto_save_filename_format[0])
+					? state->config.auto_save_filename_format : "escreen-%Y%m%d-%H%M%S";
+				strftime(name, sizeof(name), fmt, t);
+				// Strip trailing slashes before joining
+				char dir[512];
+				snprintf(dir, sizeof(dir), "%s", path);
+				while (dir[0] && dir[strlen(dir) - 1] == '/') dir[strlen(dir) - 1] = '\0';
+				snprintf(filename, sizeof(filename), "%s/%s.png", dir, name);
+			} else {
+				snprintf(filename, sizeof(filename), "%s", path);
+			}
 		} else {
 			snprintf(filename, sizeof(filename), "escreen-%ld.png", time(NULL));
 		}
