@@ -98,6 +98,7 @@ struct escreen_state {
 	struct escreen_box result;
 	int32_t total_min_x, total_min_y;
 	int32_t total_max_x, total_max_y;
+	double max_scale_factor; // Maximum physical/logical pixel ratio across all outputs
 
 	bool clipboard;
 	bool save_file;
@@ -152,6 +153,7 @@ struct escreen_output {
 	struct escreen_box geometry;
 	struct escreen_box logical_geometry;
 	int32_t scale;
+	double scale_factor; // True physical/logical ratio (works for fractional scaling too)
 
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer_surface;

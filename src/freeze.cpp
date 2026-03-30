@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <wayland-client.h>
 #include <cairo.h>
+#include <math.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include "escreen.h"
@@ -108,7 +109,14 @@ void freeze_run(struct escreen_state *state) {
 		if (!output->frozen_failed && output->frozen_buffer.data) {
 			int fw = output->frozen_buffer.width;
 			int fh = output->frozen_buffer.height;
-			
+
+			// Compute the true physical/logical pixel ratio.
+			if (output->logical_geometry.width > 0) {
+				output->scale_factor = (double)fw / output->logical_geometry.width;
+			} else {
+				output->scale_factor = (double)output->scale;
+			}
+
 			// Original frozen image
 			output->frozen_buffer.pixman = pixman_image_create_bits(
 				PIXMAN_x8r8g8b8, fw, fh, output->frozen_buffer.data, output->frozen_buffer.stride);
@@ -124,7 +132,6 @@ void freeze_run(struct escreen_state *state) {
 				continue;
 			}
 
-			// Ensure the image data is freed when the image is destroyed
 			pixman_image_set_destroy_function(dark, (void*)free, dark_data);
 			
 			// 1. Copy original (using SRC operator)
@@ -133,17 +140,14 @@ void freeze_run(struct escreen_state *state) {
 				0, 0, 0, 0, 0, 0, fw, fh);
 			
 			// 2. DARKEN (Blend with 40% black)
-			pixman_color_t black = {0, 0, 0, 0x6666}; // ~40% opacity (0xFFFF is 100%)
+			pixman_color_t black = {0, 0, 0, 0x6666};
 			pixman_image_t *solid = pixman_image_create_solid_fill(&black);
-			
 			pixman_image_composite(PIXMAN_OP_OVER,
 				solid, NULL, dark,
 				0, 0, 0, 0, 0, 0, fw, fh);
-			
 			pixman_image_unref(solid);
 			output->darkened_image = dark;
 
-			// Fallback for parts of the code still using Cairo (like crop_and_save for now)
 			output->frozen_buffer.cairo_surface = cairo_image_surface_create_for_data(
 				output->frozen_buffer.data, CAIRO_FORMAT_RGB24,
 				fw, fh, output->frozen_buffer.stride);
@@ -176,31 +180,33 @@ void freeze_run(struct escreen_state *state) {
 	state->total_max_x = max_x;
 	state->total_max_y = max_y;
 
-	// Determine the maximum scale across all outputs for high-res stitching
-	int max_scale = 1;
+	// Find the maximum scale_factor across all outputs for high-res stitching.
+	double max_scale_factor = 1.0;
 	wl_list_for_each(output, &state->outputs, link) {
-		if (output->scale > max_scale) max_scale = output->scale;
+		if (output->scale_factor > max_scale_factor) max_scale_factor = output->scale_factor;
 	}
+	state->max_scale_factor = max_scale_factor;
 
 	if (!first) {
-		int tw = (max_x - min_x) * max_scale;
-		int th = (max_y - min_y) * max_scale;
+		int tw = (int)round((max_x - min_x) * max_scale_factor);
+		int th = (int)round((max_y - min_y) * max_scale_factor);
 		cairo_surface_t *total = cairo_image_surface_create(CAIRO_FORMAT_RGB24, tw, th);
 		cairo_t *cr = cairo_create(total);
-		cairo_scale(cr, (double)max_scale, (double)max_scale);
+		cairo_scale(cr, max_scale_factor, max_scale_factor);
 		cairo_translate(cr, -min_x, -min_y);
 		
 		wl_list_for_each(output, &state->outputs, link) {
 			if (output->frozen_failed || !output->frozen_buffer.cairo_surface) continue;
             cairo_save(cr);
             cairo_translate(cr, output->logical_geometry.x, output->logical_geometry.y);
-            cairo_scale(cr, 1.0/output->scale, 1.0/output->scale); 
+            cairo_scale(cr, 1.0 / output->scale_factor, 1.0 / output->scale_factor);
             cairo_set_source_surface(cr, output->frozen_buffer.cairo_surface, 0, 0);
             cairo_paint(cr);
             cairo_restore(cr);
 		}
 		
 		state->global_capture = total;
+		cairo_surface_set_device_scale(total, max_scale_factor, max_scale_factor);
 		cairo_destroy(cr);
 	}
 }
