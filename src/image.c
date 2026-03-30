@@ -82,7 +82,7 @@ void image_save(struct escreen_state *state, void *data, int32_t width, int32_t 
 	if (state->save_file) {
 		char filename[512];
 		if (state->manual_save_path) {
-			strncpy(filename, state->manual_save_path, sizeof(filename));
+			snprintf(filename, sizeof(filename), "%s", state->manual_save_path);
 		} else {
 			snprintf(filename, sizeof(filename), "escreen-%ld.png", time(NULL));
 		}

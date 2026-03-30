@@ -144,11 +144,11 @@ void config_load(struct escreen_state *state) {
 	const char *home = getenv("HOME");
 	if (!home) return;
 
-	char cfg_dir[512];
+	char cfg_dir[1024];
 	snprintf(cfg_dir, sizeof(cfg_dir), "%s/.config/escreen", home);
 	mkdir(cfg_dir, 0755);
 
-	char path[512];
+	char path[1100];
 	snprintf(path, sizeof(path), "%s/config", cfg_dir);
 
 	FILE *f = fopen(path, "r");
