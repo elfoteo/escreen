@@ -185,14 +185,28 @@ static void render(struct escreen_output *output) {
 		cairo_surface_t *global_capture = state->global_capture;
 		if (global_capture && cairo_surface_status(global_capture) == CAIRO_STATUS_SUCCESS) {
 			cairo_save(cr);
-			cairo_set_source_surface(cr, global_capture, state->total_min_x, state->total_min_y);
 			cairo_rectangle(cr, l_x, l_y, l_w, l_h);
-			cairo_fill(cr);
+			cairo_clip(cr);
+
+			cairo_pattern_t *pat = cairo_pattern_create_for_surface(global_capture);
+			cairo_matrix_t mat;
+			cairo_matrix_init_identity(&mat);
+			cairo_matrix_scale(&mat, state->max_scale_factor, state->max_scale_factor);
+			cairo_matrix_translate(&mat, -state->total_min_x, -state->total_min_y);
+			cairo_pattern_set_matrix(pat, &mat);
+			cairo_set_source(cr, pat);
+			cairo_paint(cr);
+			cairo_pattern_destroy(pat);
 			
 			if (state->sketching.history_layer) {
-				cairo_set_source_surface(cr, state->sketching.history_layer, state->total_min_x, state->total_min_y);
-				cairo_rectangle(cr, l_x, l_y, l_w, l_h);
-				cairo_fill(cr);
+				pat = cairo_pattern_create_for_surface(state->sketching.history_layer);
+				cairo_matrix_init_identity(&mat);
+				cairo_matrix_scale(&mat, state->max_scale_factor, state->max_scale_factor);
+				cairo_matrix_translate(&mat, -state->total_min_x, -state->total_min_y);
+				cairo_pattern_set_matrix(pat, &mat);
+				cairo_set_source(cr, pat);
+				cairo_paint(cr);
+				cairo_pattern_destroy(pat);
 			}
 			cairo_restore(cr);
 		}

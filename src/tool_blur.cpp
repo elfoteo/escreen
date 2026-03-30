@@ -69,17 +69,11 @@ static void blur_on_mousedown(struct escreen_state *state, double x, double y) {
 	}
 
 	if (blur_mask_surface) {
-		int max_scale = 1;
-		struct escreen_output *out;
-		wl_list_for_each(out, &state->outputs, link) {
-			if (out->scale > max_scale) max_scale = out->scale;
-		}
-
 		cairo_t *cr = cairo_create(blur_mask_surface);
 		cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
 		cairo_paint(cr);
 		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
-		cairo_scale(cr, (double)max_scale, (double)max_scale);
+		cairo_scale(cr, state->max_scale_factor, state->max_scale_factor);
 		cairo_set_source_rgba(cr, 1, 1, 1, 1);
 		cairo_arc(cr, x - state->total_min_x, y - state->total_min_y, state->sketching.thickness / 2.0, 0, 2 * M_PI);
 		cairo_fill(cr);
@@ -95,14 +89,8 @@ static void blur_on_mousemove(struct escreen_state *state, double x, double y) {
 	current_points[num_points++] = (point_t){x, y};
 
 	if (blur_mask_surface && num_points >= 2) {
-		int max_scale = 1;
-		struct escreen_output *out;
-		wl_list_for_each(out, &state->outputs, link) {
-			if (out->scale > max_scale) max_scale = out->scale;
-		}
-
 		cairo_t *cr = cairo_create(blur_mask_surface);
-		cairo_scale(cr, (double)max_scale, (double)max_scale);
+		cairo_scale(cr, state->max_scale_factor, state->max_scale_factor);
 		cairo_set_source_rgba(cr, 1, 1, 1, 1);
 		cairo_set_line_width(cr, state->sketching.thickness);
 		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
@@ -145,11 +133,7 @@ static void render_blur_internal(struct escreen_state *state, cairo_t *cr, point
 	bx1 += pad; by1 += pad;
 
 	// Determine scale factor for max-output scale (tiles may be HiDPI)
-	int max_scale = 1;
-	struct escreen_output *o;
-	wl_list_for_each(o, &state->outputs, link) {
-		if (o->scale > max_scale) max_scale = o->scale;
-	}
+	double max_scale = state->max_scale_factor;
 
 	// Convert logical coords to physical pixel coords in global_capture
 	// global_capture is stitched at max_scale, origin = (total_min_x, total_min_y)
@@ -241,8 +225,25 @@ static void render_blur_internal(struct escreen_state *state, cairo_t *cr, point
 static void blur_draw_preview(struct escreen_state *state, cairo_t *cr) {
 	if (blurred_cache_surface && blur_mask_surface) {
 		cairo_save(cr);
-		cairo_set_source_surface(cr, blurred_cache_surface, state->total_min_x, state->total_min_y);
-		cairo_mask_surface(cr, blur_mask_surface, state->total_min_x, state->total_min_y);
+		
+		cairo_pattern_t *pat = cairo_pattern_create_for_surface(blurred_cache_surface);
+		cairo_matrix_t mat;
+		cairo_matrix_init_identity(&mat);
+		cairo_matrix_scale(&mat, state->max_scale_factor, state->max_scale_factor);
+		cairo_matrix_translate(&mat, -state->total_min_x, -state->total_min_y);
+		cairo_pattern_set_matrix(pat, &mat);
+		cairo_set_source(cr, pat);
+		
+		cairo_pattern_t *mask_pat = cairo_pattern_create_for_surface(blur_mask_surface);
+		cairo_matrix_init_identity(&mat);
+		cairo_matrix_scale(&mat, state->max_scale_factor, state->max_scale_factor);
+		cairo_matrix_translate(&mat, -state->total_min_x, -state->total_min_y);
+		cairo_pattern_set_matrix(mask_pat, &mat);
+		
+		cairo_mask(cr, mask_pat);
+		
+		cairo_pattern_destroy(pat);
+		cairo_pattern_destroy(mask_pat);
 		cairo_restore(cr);
 	}
 }

@@ -198,18 +198,22 @@ void freeze_run(struct escreen_state *state) {
 		wl_list_for_each(output, &state->outputs, link) {
 			if (output->frozen_failed || !output->frozen_buffer.cairo_surface) continue;
 			cairo_save(cr);
-			cairo_translate(cr, output->logical_geometry.x, output->logical_geometry.y);
-			cairo_scale(cr, 1.0 / output->scale_factor, 1.0 / output->scale_factor);
+			// Reset to identity to perform exact physical pixel placement
+			cairo_identity_matrix(cr);
+			// Translate to target pixel offset in 'total' surface
+			cairo_translate(cr, 
+				round((output->logical_geometry.x - min_x) * max_scale_factor),
+				round((output->logical_geometry.y - min_y) * max_scale_factor));
+			// Scale the source surface (already at output->scale_factor) to match max_scale_factor
+			double s_ratio = max_scale_factor / output->scale_factor;
+			cairo_scale(cr, s_ratio, s_ratio);
 			cairo_set_source_surface(cr, output->frozen_buffer.cairo_surface, 0, 0);
 			cairo_paint(cr);
 			cairo_restore(cr);
 		}
+		cairo_destroy(cr);
 
 		state->global_capture = total;
-		// Set device scale so that Cairo automatically maps physical pixels to logical
-		// units when global_capture is used as a source in the overlay (selection.c).
-		cairo_surface_set_device_scale(total, max_scale_factor, max_scale_factor);
-		cairo_destroy(cr);
 	}
 }
 
@@ -230,17 +234,20 @@ void crop_and_save(struct escreen_state *state) {
 	cairo_surface_t *dest = cairo_image_surface_create(CAIRO_FORMAT_RGB24, pw, ph);
 	cairo_t *cr = cairo_create(dest);
 
-	// Scale context so that 1 user unit = 1 logical pixel, rendered at physical resolution.
-	// global_capture has device_scale=s, so 1 logical unit -> s physical pixels in source,
-	// and s user units -> s physical pixels in dest -> exactly 1:1 physical pixel mapping.
+	// 1. Copy the background pixels from global_capture 1:1 using identity placement
+	cairo_save(cr);
+	cairo_identity_matrix(cr);
+	double px = round((double)(state->result.x - state->total_min_x) * s);
+	double py = round((double)(state->result.y - state->total_min_y) * s);
+	cairo_set_source_surface(cr, source, -px, -py);
+	cairo_paint(cr);
+	cairo_restore(cr);
+
+	// 2. Re-render tool history (actions store logical coordinates)
+	// Apply the same logical->physical transform used in selection.c
 	cairo_scale(cr, s, s);
 	cairo_translate(cr, -state->result.x, -state->result.y);
 
-	// Paint background from global capture (device_scale handles pixel mapping automatically)
-	cairo_set_source_surface(cr, source, state->total_min_x, state->total_min_y);
-	cairo_paint(cr);
-
-	// Re-render tool history (actions store logical coordinates)
 	for (size_t i = 0; i < state->sketching.history_undo_pos; i++) {
 		action_t *action = &state->sketching.history[i];
 		if (state->sketching.tools[action->type] && state->sketching.tools[action->type]->render_action) {

@@ -198,15 +198,18 @@ void freeze_run(struct escreen_state *state) {
 		wl_list_for_each(output, &state->outputs, link) {
 			if (output->frozen_failed || !output->frozen_buffer.cairo_surface) continue;
             cairo_save(cr);
-            cairo_translate(cr, output->logical_geometry.x, output->logical_geometry.y);
-            cairo_scale(cr, 1.0 / output->scale_factor, 1.0 / output->scale_factor);
+            cairo_identity_matrix(cr);
+            cairo_translate(cr, 
+                round((output->logical_geometry.x - min_x) * max_scale_factor),
+                round((output->logical_geometry.y - min_y) * max_scale_factor));
+            double s_ratio = max_scale_factor / output->scale_factor;
+            cairo_scale(cr, s_ratio, s_ratio);
             cairo_set_source_surface(cr, output->frozen_buffer.cairo_surface, 0, 0);
             cairo_paint(cr);
             cairo_restore(cr);
 		}
 		
 		state->global_capture = total;
-		cairo_surface_set_device_scale(total, max_scale_factor, max_scale_factor);
 		cairo_destroy(cr);
 	}
 }

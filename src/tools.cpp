@@ -400,10 +400,6 @@ void tools_update_history(struct escreen_state *state) {
 		int w = cairo_image_surface_get_width(state->global_capture);
 		int h = cairo_image_surface_get_height(state->global_capture);
 		state->sketching.history_layer = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
-		// Match the device scale of global_capture so the overlay maps both surfaces
-		// identically: 1 logical unit = max_scale_factor pixels.
-		cairo_surface_set_device_scale(state->sketching.history_layer,
-			state->max_scale_factor, state->max_scale_factor);
 	}
 	
 	if (state->sketching.history_layer) {
