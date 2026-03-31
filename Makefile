@@ -32,11 +32,11 @@ PROTOCOL_SOURCES = \
 	$(BUILD_DIR)/wlr-data-control-unstable-v1-client-protocol.c
 
 SOURCES = $(SRC_DIR)/escreen.c $(SRC_DIR)/selection.c $(SRC_DIR)/freeze.c $(SRC_DIR)/image.c $(SRC_DIR)/clipboard.c \
-          $(SRC_DIR)/tool_brush.cpp $(SRC_DIR)/tool_blur.cpp $(SRC_DIR)/tool_line.cpp $(SRC_DIR)/tool_rect.cpp $(SRC_DIR)/tool_arrow.cpp $(SRC_DIR)/tool_stamp.cpp $(SRC_DIR)/tool_text.cpp \
+          $(SRC_DIR)/tool_brush.cpp $(SRC_DIR)/tool_blur.cpp $(SRC_DIR)/tool_line.cpp $(SRC_DIR)/tool_rect.cpp $(SRC_DIR)/tool_arrow.cpp $(SRC_DIR)/tool_stamp.cpp $(SRC_DIR)/tool_text.cpp $(SRC_DIR)/tool_lasso.cpp \
           $(SRC_DIR)/tools.cpp $(SRC_DIR)/imgui_impl_cairo.cpp \
           imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_widgets.cpp imgui/imgui_tables.cpp
 OBJECTS = $(BUILD_DIR)/escreen.o $(BUILD_DIR)/selection.o $(BUILD_DIR)/freeze.o $(BUILD_DIR)/image.o $(BUILD_DIR)/clipboard.o $(BUILD_DIR)/config.o \
-          $(BUILD_DIR)/tool_brush.o $(BUILD_DIR)/tool_blur.o $(BUILD_DIR)/tool_line.o $(BUILD_DIR)/tool_rect.o $(BUILD_DIR)/tool_arrow.o $(BUILD_DIR)/tool_stamp.o $(BUILD_DIR)/tool_text.o \
+          $(BUILD_DIR)/tool_brush.o $(BUILD_DIR)/tool_blur.o $(BUILD_DIR)/tool_line.o $(BUILD_DIR)/tool_rect.o $(BUILD_DIR)/tool_arrow.o $(BUILD_DIR)/tool_stamp.o $(BUILD_DIR)/tool_text.o $(BUILD_DIR)/tool_lasso.o \
           $(BUILD_DIR)/tools.o $(BUILD_DIR)/imgui_impl_cairo.o \
           $(BUILD_DIR)/imgui.o $(BUILD_DIR)/imgui_draw.o $(BUILD_DIR)/imgui_widgets.o $(BUILD_DIR)/imgui_tables.o \
           $(PROTOCOL_SOURCES:.c=.o)

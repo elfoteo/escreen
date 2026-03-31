@@ -136,6 +136,9 @@ struct escreen_state {
 		bool is_text_editing;
 		double text_x, text_y;
 		uint64_t last_key_time;
+		
+		point_t *lasso_points;
+		size_t lasso_num_points;
 	} sketching;
 
 	escreen_config_t config;

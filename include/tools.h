@@ -13,6 +13,7 @@ struct escreen_state;
 
 typedef enum {
 	TOOL_SELECT,
+	TOOL_LASSO,
 	TOOL_BRUSH,
 	TOOL_BLUR,
 	TOOL_LINE,

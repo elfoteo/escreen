@@ -231,8 +231,21 @@ void crop_and_save(struct escreen_state *state) {
 	int32_t pw = (int32_t)round(state->result.width  * s);
 	int32_t ph = (int32_t)round(state->result.height * s);
 
-	cairo_surface_t *dest = cairo_image_surface_create(CAIRO_FORMAT_RGB24, pw, ph);
+	cairo_surface_t *dest = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, pw, ph);
 	cairo_t *cr = cairo_create(dest);
+
+	if (state->sketching.lasso_num_points > 0) {
+		cairo_save(cr);
+		cairo_scale(cr, s, s);
+		cairo_translate(cr, -state->result.x, -state->result.y);
+		cairo_move_to(cr, state->sketching.lasso_points[0].x, state->sketching.lasso_points[0].y);
+		for (size_t i = 1; i < state->sketching.lasso_num_points; i++) {
+			cairo_line_to(cr, state->sketching.lasso_points[i].x, state->sketching.lasso_points[i].y);
+		}
+		cairo_close_path(cr);
+		cairo_restore(cr);
+		cairo_clip(cr);
+	}
 
 	// 1. Copy the background pixels from global_capture 1:1 using identity placement
 	cairo_save(cr);

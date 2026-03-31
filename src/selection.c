@@ -185,7 +185,15 @@ static void render(struct escreen_output *output) {
 		cairo_surface_t *global_capture = state->global_capture;
 		if (global_capture && cairo_surface_status(global_capture) == CAIRO_STATUS_SUCCESS) {
 			cairo_save(cr);
-			cairo_rectangle(cr, l_x, l_y, l_w, l_h);
+			if (state->sketching.lasso_num_points > 0) {
+				cairo_move_to(cr, state->sketching.lasso_points[0].x, state->sketching.lasso_points[0].y);
+				for (size_t i = 1; i < state->sketching.lasso_num_points; i++) {
+					cairo_line_to(cr, state->sketching.lasso_points[i].x, state->sketching.lasso_points[i].y);
+				}
+				cairo_close_path(cr);
+			} else {
+				cairo_rectangle(cr, l_x, l_y, l_w, l_h);
+			}
 			cairo_clip(cr);
 
 			cairo_pattern_t *pat = cairo_pattern_create_for_surface(global_capture);
@@ -208,17 +216,34 @@ static void render(struct escreen_output *output) {
 				cairo_paint(cr);
 				cairo_pattern_destroy(pat);
 			}
+
+			// Draw sketching tool preview (in progress strokes) — now inside the clip!
+			tools_draw(state, cr);
+
 			cairo_restore(cr);
 		}
-
-		// Draw sketching tool preview (in progress strokes)
-		tools_draw(state, cr);
 
 		// Selection border
 		cairo_set_source_rgba(cr, state->config.colors.accent.r, state->config.colors.accent.g, state->config.colors.accent.b, state->config.colors.accent.a);
 		cairo_set_line_width(cr, 2);
-		cairo_rectangle(cr, l_x, l_y, l_w, l_h);
-		cairo_stroke(cr);
+		if (state->sketching.lasso_num_points > 0) {
+			cairo_move_to(cr, state->sketching.lasso_points[0].x, state->sketching.lasso_points[0].y);
+			for (size_t i = 1; i < state->sketching.lasso_num_points; i++) {
+				cairo_line_to(cr, state->sketching.lasso_points[i].x, state->sketching.lasso_points[i].y);
+			}
+			cairo_close_path(cr);
+			// Also draw a dashed line for the lasso effect
+			cairo_stroke_preserve(cr);
+			cairo_save(cr);
+			double dashes[] = {4.0, 4.0};
+			cairo_set_dash(cr, dashes, 2, 0);
+			cairo_set_source_rgba(cr, 1, 1, 1, 0.8);
+			cairo_stroke(cr);
+			cairo_restore(cr);
+		} else {
+			cairo_rectangle(cr, l_x, l_y, l_w, l_h);
+			cairo_stroke(cr);
+		}
 
 		// Draw handles
 		escreen_color_t accent = state->config.colors.accent;
@@ -428,10 +453,22 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 		state->result.y = (y1 < y2) ? y1 : y2;
 		state->result.width = abs(x2 - x1);
 		state->result.height = abs(y2 - y1);
+		if (state->sketching.lasso_points) {
+			free(state->sketching.lasso_points);
+			state->sketching.lasso_points = NULL;
+			state->sketching.lasso_num_points = 0;
+			state->sketching.history_rendered_count = 0; // Force re-render of history
+		}
 		update_dirty_outputs(seat);
 	} else if (seat->selection_status == SELECTION_MOVING) {
 		state->result.x += dx;
 		state->result.y += dy;
+		if (state->sketching.lasso_points) {
+			free(state->sketching.lasso_points);
+			state->sketching.lasso_points = NULL;
+			state->sketching.lasso_num_points = 0;
+			state->sketching.history_rendered_count = 0;
+		}
 		update_dirty_outputs(seat);
 	} else if (seat->selection_status == SELECTION_RESIZING) {
 		struct escreen_box *box = &state->result;
@@ -445,6 +482,12 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 			case HANDLE_LEFT: box->x += dx; box->width -= dx; break;
 			case HANDLE_RIGHT: box->width += dx; break;
 			default: break;
+		}
+		if (state->sketching.lasso_points) {
+			free(state->sketching.lasso_points);
+			state->sketching.lasso_points = NULL;
+			state->sketching.lasso_num_points = 0;
+			state->sketching.history_rendered_count = 0;
 		}
 		if (box->width < 0) {
 			box->x += box->width;
@@ -492,6 +535,12 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 				seat->anchor_y = seat->y;
 				seat->selection_status = SELECTION_DRAGGING;
 				seat->has_selection = true;
+				if (seat->state->sketching.lasso_points) {
+					free(seat->state->sketching.lasso_points);
+					seat->state->sketching.lasso_points = NULL;
+					seat->state->sketching.lasso_num_points = 0;
+					seat->state->sketching.history_rendered_count = 0;
+				}
 			} else if (seat->has_selection) {
 				// Toolbar hit test MUST come first
 				if (tools_is_on_toolbar(seat->state, seat->x, seat->y)) {

@@ -17,6 +17,7 @@ extern "C" tool_interface_t tool_rectangle;
 extern "C" tool_interface_t tool_arrow;
 extern "C" tool_interface_t tool_stamp;
 extern "C" tool_interface_t tool_text;
+extern "C" tool_interface_t tool_lasso;
 
 int* tool_stamp_get_counter_ptr();
 
@@ -36,6 +37,7 @@ void tools_init(struct escreen_state *state) {
 	state->sketching.tools[TOOL_ARROW] = &tool_arrow;
 	state->sketching.tools[TOOL_STAMP] = &tool_stamp;
 	state->sketching.tools[TOOL_TEXT] = &tool_text;
+	state->sketching.tools[TOOL_LASSO] = &tool_lasso;
 	
 	state->sketching.active_tool = state->sketching.tools[TOOL_SELECT];
 	state->sketching.text_buffer[0] = '\0';
@@ -73,6 +75,7 @@ void tools_cleanup(struct escreen_state *state) {
 		cairo_surface_destroy(state->sketching.history_layer);
 		state->sketching.history_layer = NULL;
 	}
+	if (state->sketching.lasso_points) free(state->sketching.lasso_points);
 	ImGui::DestroyContext();
 }
 
@@ -207,6 +210,14 @@ static bool IconButton(struct escreen_state *state, const char* tooltip, tool_ty
         // Clean 'T' icon: top bar and stem only
         draw->AddLine(ImVec2(c.x - 7, c.y - 7), ImVec2(c.x + 7, c.y - 7), fg_col, 2.0f); // Top bar
         draw->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 8), fg_col, 2.0f);         // Stem
+    } else if (type == TOOL_LASSO) {
+        // Lasso icon: a dotted partial loop
+        float r = 9.0f;
+        for (float a = -0.5f; a < 5.0f; a += 0.8f) { // partial ellipse loop
+            draw->AddCircleFilled(ImVec2(c.x + cosf(a) * r, c.y + sinf(a) * (r * 0.7f)), 1.5f, fg_col);
+        }
+        // Small "rope end" detail
+        draw->AddLine(ImVec2(c.x + 8, c.y), ImVec2(c.x + 12, c.y + 4), fg_col, 1.5f);
     }
     
     return clicked;
@@ -253,6 +264,8 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		auto draw_icons = [&]() {
 			if (vert) ImGui::BeginGroup();
 			if (IconButton(state, "Select Area", TOOL_SELECT, tool == state->sketching.tools[TOOL_SELECT])) tools_set_active(state, TOOL_SELECT);
+			if (!vert) ImGui::SameLine();
+			if (IconButton(state, "Lasso Select Area", TOOL_LASSO, tool == state->sketching.tools[TOOL_LASSO])) tools_set_active(state, TOOL_LASSO);
 			if (!vert) ImGui::SameLine();
 			if (IconButton(state, "Brush Tool", TOOL_BRUSH, tool == state->sketching.tools[TOOL_BRUSH])) tools_set_active(state, TOOL_BRUSH);
 			if (!vert) ImGui::SameLine();
