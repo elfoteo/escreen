@@ -84,6 +84,63 @@ static const struct zwlr_screencopy_frame_v1_listener frame_listener = {
 	.buffer_done = frame_handle_buffer_done,
 };
 
+static void apply_output_transform(struct pool_buffer *pool, int32_t transform) {
+	if (transform == WL_OUTPUT_TRANSFORM_NORMAL) return;
+
+	int fw = pool->width;
+	int fh = pool->height;
+	int stride = pool->stride;
+	uint32_t *src = pool->data;
+
+	int rw = fw, rh = fh;
+	if (transform == WL_OUTPUT_TRANSFORM_90 ||
+		transform == WL_OUTPUT_TRANSFORM_270 ||
+		transform == WL_OUTPUT_TRANSFORM_FLIPPED_90 ||
+		transform == WL_OUTPUT_TRANSFORM_FLIPPED_270) {
+		rw = fh;
+		rh = fw;
+	}
+
+	int rstride = rw * 4;
+	size_t rsize = rh * rstride;
+	uint32_t *dst = malloc(rsize);
+	if (!dst) return;
+
+	for (int y = 0; y < fh; y++) {
+		uint32_t *src_row = (uint32_t*)((uint8_t*)src + y * stride);
+		for (int x = 0; x < fw; x++) {
+			int dx = x, dy = y;
+
+			switch (transform) {
+				case WL_OUTPUT_TRANSFORM_90:
+					dx = fh - 1 - y; dy = x; break;
+				case WL_OUTPUT_TRANSFORM_180:
+					dx = fw - 1 - x; dy = fh - 1 - y; break;
+				case WL_OUTPUT_TRANSFORM_270:
+					dx = y; dy = fw - 1 - x; break;
+				case WL_OUTPUT_TRANSFORM_FLIPPED:
+					dx = fw - 1 - x; dy = y; break;
+				case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+					dx = fh - 1 - y; dy = fw - 1 - x; break;
+				case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+					dx = x; dy = fh - 1 - y; break;
+				case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+					dx = y; dy = x; break;
+			}
+
+			uint32_t *dst_pixel = (uint32_t*)((uint8_t*)dst + dy * rstride) + dx;
+			*dst_pixel = src_row[x];
+		}
+	}
+
+	munmap(pool->data, pool->size);
+	pool->data = dst;
+	pool->width = rw;
+	pool->height = rh;
+	pool->stride = rstride;
+	pool->size = rsize;
+}
+
 void freeze_run(struct escreen_state *state) {
 	struct escreen_output *output;
 	int pending = 0;
@@ -104,6 +161,8 @@ void freeze_run(struct escreen_state *state) {
 
 	wl_list_for_each(output, &state->outputs, link) {
 		if (!output->frozen_failed && output->frozen_buffer.data) {
+			apply_output_transform(&output->frozen_buffer, output->transform);
+
 			int fw = output->frozen_buffer.width;
 			int fh = output->frozen_buffer.height;
 

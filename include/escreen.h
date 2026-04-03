@@ -155,6 +155,7 @@ struct escreen_output {
 
 	struct escreen_box geometry;
 	struct escreen_box logical_geometry;
+	int32_t transform;
 	int32_t scale;
 	double scale_factor; // True physical/logical ratio (works for fractional scaling too)
 

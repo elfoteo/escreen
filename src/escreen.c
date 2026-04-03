@@ -69,10 +69,11 @@ static void output_handle_geometry(void *data, struct wl_output *wl_output,
 		int32_t x, int32_t y, int32_t physical_width, int32_t physical_height,
 		int32_t subpixel, const char *make, const char *model,
 		int32_t transform) {
-	(void)wl_output; (void)physical_width; (void)physical_height; (void)subpixel; (void)make; (void)model; (void)transform;
+	(void)wl_output; (void)physical_width; (void)physical_height; (void)subpixel; (void)make; (void)model;
 	struct escreen_output *output = data;
 	output->geometry.x = x;
 	output->geometry.y = y;
+	output->transform = transform;
 }
 
 static void output_handle_mode(void *data, struct wl_output *wl_output,
