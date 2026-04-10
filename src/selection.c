@@ -260,7 +260,10 @@ static void render(struct escreen_output *output) {
 		struct escreen_seat *seat_iter;
 		wl_list_for_each(seat_iter, &state->seats, link) {
 			tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
-			if (tool && tool->on_draw_preview) {
+			if (tool && tool->on_draw_preview &&
+				seat_iter->selection_status != SELECTION_RESIZING &&
+				seat_iter->selection_status != SELECTION_MOVING &&
+				seat_iter->selection_status != SELECTION_DRAGGING) {
 				tool->on_draw_preview(state, cr, seat_iter->x, seat_iter->y);
 			}
 		}
@@ -370,6 +373,10 @@ static void update_dirty_outputs(struct escreen_seat *seat) {
 }
 
 static void set_cursor(struct escreen_seat *seat, struct wl_pointer *pointer, uint32_t serial, const char *name) {
+	if (!name || strcmp(name, "none") == 0) {
+		if (pointer) wl_pointer_set_cursor(pointer, serial, NULL, 0, 0);
+		return;
+	}
 	struct wl_cursor *cursor = wl_cursor_theme_get_cursor(seat->state->cursor_theme, name);
 	if (!cursor) cursor = wl_cursor_theme_get_cursor(seat->state->cursor_theme, "left_ptr");
 	if (cursor) {
@@ -399,6 +406,12 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 
 	if (seat->selection_status >= SELECTION_EDITING || seat->button_pressed) {
 		const char *cname = "crosshair";
+		if (seat->selection_status >= SELECTION_EDITING) {
+			tool_interface_t *active_tool = (tool_interface_t*)state->sketching.active_tool;
+			if (active_tool && active_tool->type == TOOL_COLORPICKER) {
+				cname = "none";
+			}
+		}
 		
 		if (seat->selection_status == SELECTION_RESIZING) {
 			switch (seat->active_handle) {

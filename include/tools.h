@@ -21,6 +21,7 @@ typedef enum {
 	TOOL_ARROW,
 	TOOL_STAMP,
 	TOOL_TEXT,
+	TOOL_COLORPICKER,
 	TOOL_COUNT
 } tool_type_t;
 

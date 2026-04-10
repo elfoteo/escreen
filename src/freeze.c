@@ -59,17 +59,18 @@ static void frame_handle_buffer_done(void *data, struct zwlr_screencopy_frame_v1
 
 static void frame_handle_ready(void *data, struct zwlr_screencopy_frame_v1 *frame,
 		uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec) {
-	(void)frame; (void)tv_sec_hi; (void)tv_sec_lo; (void)tv_nsec;
+	(void)tv_sec_hi; (void)tv_sec_lo; (void)tv_nsec;
 	struct escreen_output *output = data;
 	output->frozen_captured = true;
 	output->frozen_failed = false;
+	zwlr_screencopy_frame_v1_destroy(frame);
 }
 
 static void frame_handle_failed(void *data, struct zwlr_screencopy_frame_v1 *frame) {
-	(void)frame;
 	struct escreen_output *output = data;
 	output->frozen_captured = true;
 	output->frozen_failed = true;
+	zwlr_screencopy_frame_v1_destroy(frame);
 }
 
 static void noop() {}
@@ -133,7 +134,7 @@ static void apply_output_transform(struct pool_buffer *pool, int32_t transform) 
 		}
 	}
 
-	munmap(pool->data, pool->size);
+	free(pool->data);
 	pool->data = dst;
 	pool->width = rw;
 	pool->height = rh;
@@ -156,6 +157,18 @@ void freeze_run(struct escreen_state *state) {
 		pending = 0;
 		wl_list_for_each(output, &state->outputs, link) {
 			if (!output->frozen_captured) pending++;
+		}
+	}
+
+	// Detach from Wayland SHM buffer IMMEDIATELY to prevent compositor mutating the buffer asynchronously.
+	wl_list_for_each(output, &state->outputs, link) {
+		if (!output->frozen_failed && output->frozen_buffer.data) {
+			uint32_t *isolated = malloc(output->frozen_buffer.size);
+			if (isolated) {
+				memcpy(isolated, output->frozen_buffer.data, output->frozen_buffer.size);
+				munmap(output->frozen_buffer.data, output->frozen_buffer.size);
+				output->frozen_buffer.data = isolated;
+			}
 		}
 	}
 

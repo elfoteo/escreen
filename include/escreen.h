@@ -139,6 +139,11 @@ struct escreen_state {
 		
 		point_t *lasso_points;
 		size_t lasso_num_points;
+
+		// Toolbar drag — when pinned, the auto-placement is bypassed
+		bool   toolbar_pinned;
+		double toolbar_pinned_x;
+		double toolbar_pinned_y;
 	} sketching;
 
 	escreen_config_t config;
