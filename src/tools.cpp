@@ -284,12 +284,13 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 	io.DisplaySize = ImVec2((float)state->total_max_x, (float)state->total_max_y);
 	ImGui::NewFrame();
 
-	// For the pinned case use the raw top-left; for auto, preserve the pivot
-	// so the window doesn't jump when switching orientation.
-	if (pinned) {
-		ImGui::SetNextWindowPos(ImVec2(eff_x, eff_y), ImGuiCond_Always);
-	} else {
-		ImVec2 pivot(0.0f, 0.0f);
+	static ImVec2 last_wsize(180, 50);
+
+	float cx_eff = eff_x;
+	float cy_eff = eff_y;
+	ImVec2 pivot(0.0f, 0.0f);
+
+	if (!pinned) {
 		ImVec2 pos((float)auto_tx, (float)auto_ty);
 		if (auto_tx + auto_tw / 2.0 < state->result.x)             { pivot.x = 1.0f; pos.x = (float)(auto_tx + auto_tw); }
 		else if (auto_tx > state->result.x + state->result.width - 10) { pivot.x = 0.0f; pos.x = (float)auto_tx; }
@@ -297,8 +298,49 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		if (auto_ty + auto_th / 2.0 < state->result.y)              { pivot.y = 1.0f; pos.y = (float)(auto_ty + auto_th); }
 		else if (auto_ty > state->result.y + state->result.height - 10) { pivot.y = 0.0f; pos.y = (float)auto_ty; }
 		else                                                         { pivot.y = 0.5f; pos.y = (float)(auto_ty + auto_th / 2.0); }
-		ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
+		
+		cx_eff = pos.x - pivot.x * last_wsize.x;
+		cy_eff = pos.y - pivot.y * last_wsize.y;
 	}
+
+	// Clamp out-of-bounds using the actual last window size
+	{
+		float center_x = cx_eff + last_wsize.x * 0.5f;
+		float center_y = cy_eff + last_wsize.y * 0.5f;
+		struct escreen_output *o, *best = NULL;
+		wl_list_for_each(o, &state->outputs, link) {
+			if (center_x >= o->logical_geometry.x && center_x < o->logical_geometry.x + o->logical_geometry.width &&
+			    center_y >= o->logical_geometry.y && center_y < o->logical_geometry.y + o->logical_geometry.height) {
+				best = o;
+				break;
+			}
+		}
+
+		float mon_min_x = best ? (float)best->logical_geometry.x : (float)state->total_min_x;
+		float mon_min_y = best ? (float)best->logical_geometry.y : (float)state->total_min_y;
+		float mon_max_x = best ? (float)(best->logical_geometry.x + best->logical_geometry.width)  : (float)state->total_max_x;
+		float mon_max_y = best ? (float)(best->logical_geometry.y + best->logical_geometry.height) : (float)state->total_max_y;
+
+		float min_x = mon_min_x + 4.0f;
+		float max_x = mon_max_x - last_wsize.x - 4.0f;
+		float min_y = mon_min_y + 4.0f;
+		float max_y = mon_max_y - last_wsize.y - 4.0f;
+
+		if (max_x < min_x) max_x = min_x; // Just in case window is wider than screen
+		if (max_y < min_y) max_y = min_y;
+
+		if (cx_eff < min_x) cx_eff = min_x;
+		if (cx_eff > max_x) cx_eff = max_x;
+		if (cy_eff < min_y) cy_eff = min_y;
+		if (cy_eff > max_y) cy_eff = max_y;
+	}
+
+	if (pinned) {
+		state->sketching.toolbar_pinned_x = cx_eff;
+		state->sketching.toolbar_pinned_y = cy_eff;
+	}
+
+	ImGui::SetNextWindowPos(ImVec2(cx_eff + pivot.x * last_wsize.x, cy_eff + pivot.y * last_wsize.y), ImGuiCond_Always, pivot);
 
 	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4((float)state->config.colors.toolbar_bg.r, (float)state->config.colors.toolbar_bg.g, (float)state->config.colors.toolbar_bg.b, (float)state->config.colors.toolbar_bg.a));
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a));
@@ -503,43 +545,7 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 			}
 		}
 
-		// ----------------------------------------------------------------
-		// Position correction pass — run after layout is known.
-		// ----------------------------------------------------------------
-		if (pinned) {
-			// Clamp the pinned window fully inside the total desktop area.
-			ImVec2 wsize = ImGui::GetWindowSize();
-			float cx = (float)state->sketching.toolbar_pinned_x;
-			float cy = (float)state->sketching.toolbar_pinned_y;
-			float min_x = (float)state->total_min_x + 4.0f;
-			float max_x = (float)state->total_max_x - wsize.x - 4.0f;
-			float min_y = (float)state->total_min_y + 4.0f;
-			float max_y = (float)state->total_max_y - wsize.y - 4.0f;
-			if (cx < min_x) cx = min_x;
-			if (cx > max_x) cx = max_x;
-			if (cy < min_y) cy = min_y;
-			if (cy > max_y) cy = max_y;
-			ImGui::SetWindowPos(ImVec2(cx, cy));
-		} else {
-			// Auto-correction: re-run placement with the actual rendered size
-			// so the window never clips against the selection border.
-			ImVec2 actual_size = ImGui::GetWindowSize();
-			double nx, ny;
-			bool nvert;
-			const double current_w = (double)actual_size.x;
-			const double current_h = (double)actual_size.y;
-			double alt_w, alt_h;
-			if (state->sketching.is_vertical) {
-				alt_w = has_options ? 280 : 180;
-				alt_h = has_options ? 100 : 50;
-				get_toolbar_placement(state, alt_w, alt_h, current_w, current_h, &nx, &ny, &nvert);
-			} else {
-				alt_w = has_options ? 150 : 55;
-				alt_h = 240;
-				get_toolbar_placement(state, current_w, current_h, alt_w, alt_h, &nx, &ny, &nvert);
-			}
-			ImGui::SetWindowPos(ImVec2((float)nx, (float)ny));
-		}
+		last_wsize = ImGui::GetWindowSize();
 	}
 	ImGui::End();
 	ImGui::PopStyleColor(5);
