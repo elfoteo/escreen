@@ -1,4 +1,5 @@
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "escreen.h"
 #include "tools.h"
 #include <vector>
@@ -139,14 +140,22 @@ static void get_toolbar_placement(struct escreen_state *state, double w_h, doubl
 	if (*out_y + h_v > max_y - 4) *out_y = max_y - h_v - 4;
 }
 
+// Actual toolbar sizes measured from the last drawn frame (from the real
+// widget layout). Placement uses these instead of guessed constants so the
+// panel hugs the selection for the active tool's true width, which changes
+// with the tool's options.
+static double g_toolbar_v_w = 0.0, g_toolbar_v_h = 0.0; // vertical panel size
+static double g_toolbar_h_w = 0.0, g_toolbar_h_h = 0.0; // horizontal panel size
+
 static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, double *w, double *h) {
-	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
-	bool has_options = tool->show_color || tool->show_thickness || tool->show_hardness || tool->show_fill;
-	
-	double w_h = has_options ? 200 : 180;
-	double h_h = has_options ? 160 : 50;
-	double w_v = has_options ? 150 : 55;
-	double h_v = 240;
+	double w_v = g_toolbar_v_w, h_v = g_toolbar_v_h;
+	double w_h = g_toolbar_h_w, h_h = g_toolbar_h_h;
+
+	// Nothing has been drawn yet (very first frame): fall back to a panel
+	// sized for an icon column next to the colour wheel. The measured size
+	// replaces this as soon as the toolbar renders once.
+	if (w_v <= 0.0) { w_v = 216.0; h_v = 392.0; }
+	if (w_h <= 0.0) { w_h = 380.0; h_h = 60.0; }
 
 	get_toolbar_placement(state, w_h, h_h, w_v, h_v, x, y, &state->sketching.is_vertical);
 	
@@ -264,16 +273,190 @@ static void draw_grip_dots(ImDrawList *draw,
 
 void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 	ImGuiIO& io = ImGui::GetIO();
-
-	// Always compute the auto-based position; this also updates is_vertical.
-	double auto_tx, auto_ty, auto_tw, auto_th;
-	get_toolbar_rect(state, &auto_tx, &auto_ty, &auto_tw, &auto_th);
+	io.DisplaySize = ImVec2((float)state->total_max_x, (float)state->total_max_y);
+	ImGui::NewFrame();
 
 	const bool pinned = state->sketching.toolbar_pinned;
+	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+	const bool has_options = tool->show_color || tool->show_thickness ||
+	                          tool->show_hardness || tool->show_fill ||
+	                          tool->type == TOOL_STAMP || tool->type == TOOL_TEXT;
 
-	// Effective top-left position fed to ImGui this frame
-	const float eff_x = pinned ? (float)state->sketching.toolbar_pinned_x : (float)auto_tx;
-	const float eff_y = pinned ? (float)state->sketching.toolbar_pinned_y : (float)auto_ty;
+	// Handle strip height; the strip is drawn as an overlay at the end of
+	// the frame so it spans the final window width without contributing to
+	// the measured content width (which would keep the window at an old,
+	// wider size forever).
+	const float HANDLE_H = 12.0f;
+	auto draw_handle_spacer = [&]() {
+		ImGui::Dummy(ImVec2(0.0f, HANDLE_H));
+		ImGui::Spacing();
+	};
+
+	// ----------------------------------------------------------------
+	// Tool icons
+	// ----------------------------------------------------------------
+	auto draw_icons = [&](bool vert) {
+		if (vert) ImGui::BeginGroup();
+		if (IconButton(state, "Select Area",       TOOL_SELECT,      tool == state->sketching.tools[TOOL_SELECT]))      tools_set_active(state, TOOL_SELECT);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Lasso Select Area",  TOOL_LASSO,       tool == state->sketching.tools[TOOL_LASSO]))       tools_set_active(state, TOOL_LASSO);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Brush Tool",         TOOL_BRUSH,       tool == state->sketching.tools[TOOL_BRUSH]))       tools_set_active(state, TOOL_BRUSH);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Blur Tool",          TOOL_BLUR,        tool == state->sketching.tools[TOOL_BLUR]))        tools_set_active(state, TOOL_BLUR);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Line Tool",          TOOL_LINE,        tool == state->sketching.tools[TOOL_LINE]))        tools_set_active(state, TOOL_LINE);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Rectangle Tool",     TOOL_RECTANGLE,   tool == state->sketching.tools[TOOL_RECTANGLE]))   tools_set_active(state, TOOL_RECTANGLE);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Arrow Tool",         TOOL_ARROW,       tool == state->sketching.tools[TOOL_ARROW]))       tools_set_active(state, TOOL_ARROW);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Stamp Tool",         TOOL_STAMP,       tool == state->sketching.tools[TOOL_STAMP]))       tools_set_active(state, TOOL_STAMP);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Text Tool",          TOOL_TEXT,        tool == state->sketching.tools[TOOL_TEXT]))        tools_set_active(state, TOOL_TEXT);
+		if (!vert) ImGui::SameLine();
+		if (IconButton(state, "Color Picker",       TOOL_COLORPICKER, tool == state->sketching.tools[TOOL_COLORPICKER])) tools_set_active(state, TOOL_COLORPICKER);
+		if (vert) ImGui::EndGroup();
+	};
+
+	// ----------------------------------------------------------------
+	// Tool options (colour swatch, sliders, etc.)
+	// ----------------------------------------------------------------
+	auto draw_options = [&](bool vert) {
+		if (vert) ImGui::BeginGroup();
+
+		// The option widgets keep their natural widths; the window is sized
+		// from the actual layout, so each tool's panel is measured on the
+		// fly rather than forced to a constant.
+		const float wheel_w  = vert ? 160.0f : 240.0f;
+		const float option_w = vert ? 130.0f : 120.0f;
+
+		// Colour wheel embedded directly in the toolbar (no popup).
+		if (tool->show_color) {
+			float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
+			ImGui::PushItemWidth(wheel_w);
+			if (ImGui::ColorPicker3("##ColorWheel", color,
+					ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoSidePreview |
+					ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoOptions |
+					ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_PickerHueWheel)) {
+				state->sketching.r = color[0];
+				state->sketching.g = color[1];
+				state->sketching.b = color[2];
+			}
+			ImGui::PopItemWidth();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
+			ImGui::Spacing();
+		}
+
+		// Remaining options flow on a new row below the colour wheel.
+		bool row_started = false;
+		auto next = [&]() {
+			if (!row_started) { row_started = true; return; }
+			if (vert) ImGui::Spacing(); else ImGui::SameLine();
+		};
+
+		if (tool->show_thickness) {
+			next();
+			ImGui::PushItemWidth(option_w);
+			float thickness = (float)state->sketching.thickness;
+			if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, "Size: %.0f")) {
+				state->sketching.thickness = thickness;
+			}
+			ImGui::PopItemWidth();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size");
+		}
+		if (tool->show_hardness) {
+			next();
+			ImGui::PushItemWidth(option_w);
+			float hardness = (float)state->sketching.hardness;
+			if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, "Hard: %.2f")) {
+				state->sketching.hardness = hardness;
+			}
+			ImGui::PopItemWidth();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hardness");
+		}
+		if (tool->show_fill) {
+			next();
+			ImGui::PushItemWidth(option_w);
+			bool filled = state->sketching.filled;
+			if (ImGui::Checkbox("Fill", &filled)) {
+				state->sketching.filled = filled;
+			}
+			ImGui::PopItemWidth();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fill");
+		}
+		if (tool->type == TOOL_STAMP) {
+			next();
+			int* counter_ptr = tool_stamp_get_counter_ptr();
+			ImGui::PushItemWidth(vert ? 95 : 75);
+			if (ImGui::InputInt("##StampCounter", counter_ptr)) {
+				if (*counter_ptr < 1) *counter_ptr = 1;
+			}
+			ImGui::PopItemWidth();
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next Number");
+			if (ImGui::Button("Reset to 1")) {
+				*counter_ptr = 1;
+			}
+		}
+		if (vert) ImGui::EndGroup();
+	};
+
+	// The toolbar content as laid out inside a window. Whether the option
+	// column comes before or after the icons does not change the size, so
+	// this is used both for the off-screen measurement and the real window.
+	auto draw_content = [&](bool vert) {
+		draw_handle_spacer();
+		draw_icons(vert);
+		if (has_options) {
+			if (vert) ImGui::SameLine(); else ImGui::Separator();
+			draw_options(vert);
+		}
+	};
+
+	// ----------------------------------------------------------------
+	// Measure the exact content size for the active tool BEFORE the
+	// toolbar is positioned. The content is submitted once into an
+	// off-screen throwaway window per orientation; the resulting sizes are
+	// used to place and size the real window in this same frame, so there
+	// is no off-by-one frame when switching between tools.
+	// ----------------------------------------------------------------
+	ImVec2 size_v, size_h;
+	{
+		const ImGuiWindowFlags measure_flags =
+			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+			ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoFocusOnAppearing |
+			ImGuiWindowFlags_NoBringToFrontOnFocus |
+			ImGuiWindowFlags_NoBackground;
+		const ImVec2 measure_pos(-100000.0f, -100000.0f);
+		const ImVec2 measure_size(io.DisplaySize.x, io.DisplaySize.y);
+
+		ImGui::SetNextWindowPos(measure_pos, ImGuiCond_Always);
+		ImGui::SetNextWindowSize(measure_size, ImGuiCond_Always);
+		ImGui::Begin("##ToolbarMeasureV", NULL, measure_flags);
+		draw_content(true);
+		ImGuiWindow *mv = ImGui::GetCurrentWindow();
+		size_v = ImGui::CalcWindowNextAutoFitSize(mv);
+		ImGui::End();
+
+		ImGui::SetNextWindowPos(measure_pos, ImGuiCond_Always);
+		ImGui::SetNextWindowSize(measure_size, ImGuiCond_Always);
+		ImGui::Begin("##ToolbarMeasureH", NULL, measure_flags);
+		draw_content(false);
+		ImGuiWindow *mh = ImGui::GetCurrentWindow();
+		size_h = ImGui::CalcWindowNextAutoFitSize(mh);
+		ImGui::End();
+	}
+
+	// ----------------------------------------------------------------
+	// Auto placement from the measured sizes (also sets is_vertical).
+	// ----------------------------------------------------------------
+	double auto_tx, auto_ty;
+	get_toolbar_placement(state, size_h.x, size_h.y, size_v.x, size_v.y,
+	                      &auto_tx, &auto_ty, &state->sketching.is_vertical);
+	const bool vert = state->sketching.is_vertical;
+	const ImVec2 tsize = vert ? size_v : size_h;
+	const double auto_tw = tsize.x;
 
 	static bool last_vert = state->sketching.is_vertical;
 	if (last_vert != state->sketching.is_vertical) {
@@ -281,32 +464,13 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		last_vert = state->sketching.is_vertical;
 	}
 
-	io.DisplaySize = ImVec2((float)state->total_max_x, (float)state->total_max_y);
-	ImGui::NewFrame();
+	float cx_eff = pinned ? (float)state->sketching.toolbar_pinned_x : (float)auto_tx;
+	float cy_eff = pinned ? (float)state->sketching.toolbar_pinned_y : (float)auto_ty;
 
-	static ImVec2 last_wsize(180, 50);
-
-	float cx_eff = eff_x;
-	float cy_eff = eff_y;
-	ImVec2 pivot(0.0f, 0.0f);
-
-	if (!pinned) {
-		ImVec2 pos((float)auto_tx, (float)auto_ty);
-		if (auto_tx + auto_tw / 2.0 < state->result.x)             { pivot.x = 1.0f; pos.x = (float)(auto_tx + auto_tw); }
-		else if (auto_tx > state->result.x + state->result.width - 10) { pivot.x = 0.0f; pos.x = (float)auto_tx; }
-		else                                                         { pivot.x = 0.5f; pos.x = (float)(auto_tx + auto_tw / 2.0); }
-		if (auto_ty + auto_th / 2.0 < state->result.y)              { pivot.y = 1.0f; pos.y = (float)(auto_ty + auto_th); }
-		else if (auto_ty > state->result.y + state->result.height - 10) { pivot.y = 0.0f; pos.y = (float)auto_ty; }
-		else                                                         { pivot.y = 0.5f; pos.y = (float)(auto_ty + auto_th / 2.0); }
-		
-		cx_eff = pos.x - pivot.x * last_wsize.x;
-		cy_eff = pos.y - pivot.y * last_wsize.y;
-	}
-
-	// Clamp out-of-bounds using the actual last window size
+	// Clamp out-of-bounds using the measured window size
 	{
-		float center_x = cx_eff + last_wsize.x * 0.5f;
-		float center_y = cy_eff + last_wsize.y * 0.5f;
+		float center_x = cx_eff + tsize.x * 0.5f;
+		float center_y = cy_eff + tsize.y * 0.5f;
 		struct escreen_output *o, *best = NULL;
 		wl_list_for_each(o, &state->outputs, link) {
 			if (center_x >= o->logical_geometry.x && center_x < o->logical_geometry.x + o->logical_geometry.width &&
@@ -322,9 +486,9 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		float mon_max_y = best ? (float)(best->logical_geometry.y + best->logical_geometry.height) : (float)state->total_max_y;
 
 		float min_x = mon_min_x + 4.0f;
-		float max_x = mon_max_x - last_wsize.x - 4.0f;
+		float max_x = mon_max_x - tsize.x - 4.0f;
 		float min_y = mon_min_y + 4.0f;
-		float max_y = mon_max_y - last_wsize.y - 4.0f;
+		float max_y = mon_max_y - tsize.y - 4.0f;
 
 		if (max_x < min_x) max_x = min_x; // Just in case window is wider than screen
 		if (max_y < min_y) max_y = min_y;
@@ -340,7 +504,8 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		state->sketching.toolbar_pinned_y = cy_eff;
 	}
 
-	ImGui::SetNextWindowPos(ImVec2(cx_eff + pivot.x * last_wsize.x, cy_eff + pivot.y * last_wsize.y), ImGuiCond_Always, pivot);
+	ImGui::SetNextWindowSize(tsize, ImGuiCond_Always);
+	ImGui::SetNextWindowPos(ImVec2(cx_eff, cy_eff), ImGuiCond_Always);
 
 	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4((float)state->config.colors.toolbar_bg.r, (float)state->config.colors.toolbar_bg.g, (float)state->config.colors.toolbar_bg.b, (float)state->config.colors.toolbar_bg.a));
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a));
@@ -354,47 +519,76 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 	                 ImGuiWindowFlags_NoTitleBar       |
 	                 ImGuiWindowFlags_NoMove)) {
 
-		const bool vert = state->sketching.is_vertical;
-		tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
-		const bool has_options = tool->show_color || tool->show_thickness ||
-		                          tool->show_hardness || tool->show_fill ||
-		                          tool->type == TOOL_STAMP || tool->type == TOOL_TEXT;
-
 		// ----------------------------------------------------------------
-		// Drag handle — a thin strip at the top of the window.
-		// Dragging it pins the toolbar at a fixed position.
-		// Double-clicking it resets to auto-placement.
+		// Layout: icons + options, order determined by which side the
+		// toolbar sits on (rev_x / rev_y mirror the order to keep options
+		// closer to the selection).
+		// When pinned, pivot is always top-left so we fall through to the
+		// default (non-reversed) ordering.
 		// ----------------------------------------------------------------
 		{
-			ImDrawList *draw = ImGui::GetWindowDrawList();
+			draw_handle_spacer();
 
-			// Fixed handle thickness; span full available width.
-			const float HANDLE_H = 12.0f;
-			const float avail_w  = ImGui::GetContentRegionAvail().x;
+			const bool rev_x = !pinned && (auto_tx + auto_tw / 2.0 < state->result.x);
+			const bool rev_y = !pinned && (auto_ty > state->result.y + state->result.height - 10);
 
-			// Transparent, borderless button covering the handle strip.
-			ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
-			ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.08f));
-			ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1, 1, 1, 0.16f));
+			if (vert) {
+				if (rev_x && has_options) {
+					draw_options(true);
+					ImGui::SameLine();
+					draw_icons(true);
+				} else {
+					draw_icons(true);
+					if (has_options) { ImGui::SameLine(); draw_options(true); }
+				}
+			} else {
+				if (rev_y && has_options) {
+					draw_options(false);
+					ImGui::Separator();
+					draw_icons(false);
+				} else {
+					draw_icons(false);
+					if (has_options) { ImGui::Separator(); draw_options(false); }
+				}
+			}
+		}
 
-			ImGui::InvisibleButton("##drag_handle", ImVec2(avail_w, HANDLE_H));
+		// ----------------------------------------------------------------
+		// Drag handle overlay — drawn after the content so it can span the
+		// final window width without influencing the measured layout.
+		// ----------------------------------------------------------------
+		{
+			ImGuiWindow *win  = ImGui::GetCurrentWindow();
+			ImDrawList *draw  = ImGui::GetWindowDrawList();
 
-			ImGui::PopStyleColor(3);
+			ImRect handle_rect(win->InnerRect.Min,
+			                   ImVec2(win->InnerRect.Min.x + win->InnerRect.GetWidth(),
+			                          win->InnerRect.Min.y + HANDLE_H));
 
-			const bool handle_hovered = ImGui::IsItemHovered();
-			const bool handle_active  = ImGui::IsItemActive();
+			ImGuiID id = win->GetID("##drag_handle");
+			bool handle_hovered = false, handle_held = false;
+			ImGui::ButtonBehavior(handle_rect, id, &handle_hovered, &handle_held);
 
-			// On first activation: snapshot where the window currently is.
+			// Subtle background so the strip reads as a handle.
+			if (handle_held || handle_hovered) {
+				ImU32 bg = handle_held ? IM_COL32(255, 255, 255, 41)
+				                       : IM_COL32(255, 255, 255, 20);
+				draw->AddRectFilled(handle_rect.Min, handle_rect.Max, bg);
+			}
+
+			// On first press: snapshot where the window currently is.
 			static ImVec2 drag_win_start;
-			if (ImGui::IsItemActivated()) {
-				drag_win_start = ImGui::GetWindowPos();
+			static bool   was_held = false;
+			if (handle_held && !was_held) {
+				drag_win_start = win->Pos;
 				state->sketching.toolbar_pinned   = true;
 				state->sketching.toolbar_pinned_x = drag_win_start.x;
 				state->sketching.toolbar_pinned_y = drag_win_start.y;
 			}
+			was_held = handle_held;
 
 			// While dragging: update stored position by accumulated delta.
-			if (handle_active) {
+			if (handle_held) {
 				ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
 				state->sketching.toolbar_pinned_x = drag_win_start.x + delta.x;
 				state->sketching.toolbar_pinned_y = drag_win_start.y + delta.y;
@@ -406,149 +600,22 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 			}
 
 			// Visual grip dots
-			ImU32 grip_col = handle_active  ? IM_COL32(255, 255, 255, 210) :
+			ImU32 grip_col = handle_held    ? IM_COL32(255, 255, 255, 210) :
 			                 handle_hovered ? IM_COL32(255, 255, 255, 140) :
 			                                  IM_COL32(200, 200, 200,  80);
-			draw_grip_dots(draw,
-			               ImGui::GetItemRectMin(),
-			               ImGui::GetItemRectMax(),
-			               /*horizontal=*/true,
-			               grip_col);
+			draw_grip_dots(draw, handle_rect.Min, handle_rect.Max,
+			               /*horizontal=*/true, grip_col);
 
-			// Tooltip
 			if (handle_hovered)
 				ImGui::SetTooltip("Drag to pin\nDouble-click to auto-place");
-
-			ImGui::Spacing();
 		}
-
-		// ----------------------------------------------------------------
-		// Tool icons
-		// ----------------------------------------------------------------
-		auto draw_icons = [&]() {
-			if (vert) ImGui::BeginGroup();
-			if (IconButton(state, "Select Area",       TOOL_SELECT,      tool == state->sketching.tools[TOOL_SELECT]))      tools_set_active(state, TOOL_SELECT);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Lasso Select Area",  TOOL_LASSO,       tool == state->sketching.tools[TOOL_LASSO]))       tools_set_active(state, TOOL_LASSO);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Brush Tool",         TOOL_BRUSH,       tool == state->sketching.tools[TOOL_BRUSH]))       tools_set_active(state, TOOL_BRUSH);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Blur Tool",          TOOL_BLUR,        tool == state->sketching.tools[TOOL_BLUR]))        tools_set_active(state, TOOL_BLUR);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Line Tool",          TOOL_LINE,        tool == state->sketching.tools[TOOL_LINE]))        tools_set_active(state, TOOL_LINE);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Rectangle Tool",     TOOL_RECTANGLE,   tool == state->sketching.tools[TOOL_RECTANGLE]))   tools_set_active(state, TOOL_RECTANGLE);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Arrow Tool",         TOOL_ARROW,       tool == state->sketching.tools[TOOL_ARROW]))       tools_set_active(state, TOOL_ARROW);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Stamp Tool",         TOOL_STAMP,       tool == state->sketching.tools[TOOL_STAMP]))       tools_set_active(state, TOOL_STAMP);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Text Tool",          TOOL_TEXT,        tool == state->sketching.tools[TOOL_TEXT]))        tools_set_active(state, TOOL_TEXT);
-			if (!vert) ImGui::SameLine();
-			if (IconButton(state, "Color Picker",       TOOL_COLORPICKER, tool == state->sketching.tools[TOOL_COLORPICKER])) tools_set_active(state, TOOL_COLORPICKER);
-			if (vert) ImGui::EndGroup();
-		};
-
-		// ----------------------------------------------------------------
-		// Tool options (colour swatch, sliders, etc.)
-		// ----------------------------------------------------------------
-		auto draw_options = [&]() {
-			if (vert) ImGui::BeginGroup();
-			if (tool->show_color) {
-				float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
-				ImGui::PushItemWidth(vert ? 95 : 120);
-				if (ImGui::ColorEdit3("Color", color, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
-					state->sketching.r = color[0];
-					state->sketching.g = color[1];
-					state->sketching.b = color[2];
-				}
-				ImGui::PopItemWidth();
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
-				if (vert) ImGui::Spacing(); else ImGui::SameLine();
-			}
-			if (tool->show_thickness) {
-				ImGui::PushItemWidth(vert ? 95 : 120);
-				float thickness = (float)state->sketching.thickness;
-				if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, "Size: %.0f")) {
-					state->sketching.thickness = thickness;
-				}
-				ImGui::PopItemWidth();
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size");
-				if (vert) ImGui::Spacing(); else ImGui::SameLine();
-			}
-			if (tool->show_hardness) {
-				float hardness = (float)state->sketching.hardness;
-				ImGui::PushItemWidth(vert ? 95 : 120);
-				if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, "Hard: %.2f")) {
-					state->sketching.hardness = hardness;
-				}
-				ImGui::PopItemWidth();
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hardness");
-				if (vert) ImGui::Spacing(); else ImGui::SameLine();
-			}
-			if (tool->show_fill) {
-				ImGui::PushItemWidth(vert ? 95 : 120);
-				bool filled = state->sketching.filled;
-				if (ImGui::Checkbox("Fill", &filled)) {
-					state->sketching.filled = filled;
-				}
-				ImGui::PopItemWidth();
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fill");
-				if (vert) ImGui::Spacing(); else ImGui::SameLine();
-			}
-			if (tool->type == TOOL_STAMP) {
-				int* counter_ptr = tool_stamp_get_counter_ptr();
-				ImGui::PushItemWidth(vert ? 95 : 75);
-				if (ImGui::InputInt("##StampCounter", counter_ptr)) {
-					if (*counter_ptr < 1) *counter_ptr = 1;
-				}
-				ImGui::PopItemWidth();
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next Number");
-				if (ImGui::Button("Reset to 1")) {
-					*counter_ptr = 1;
-				}
-				if (vert) ImGui::Spacing(); else ImGui::SameLine();
-			}
-			if (vert) ImGui::EndGroup();
-		};
-
-		// ----------------------------------------------------------------
-		// Layout: icons + options, order determined by which side the
-		// toolbar sits on (rev_x / rev_y mirror the order to keep options
-		// closer to the selection).
-		// When pinned, pivot is always top-left so we fall through to the
-		// default (non-reversed) ordering.
-		// ----------------------------------------------------------------
-		// Compute pivot so we know the reversal direction (auto case only).
-		{
-			const bool rev_x = !pinned && (auto_tx + auto_tw / 2.0 < state->result.x);
-			const bool rev_y = !pinned && (auto_ty > state->result.y + state->result.height - 10);
-
-			if (vert) {
-				if (rev_x && has_options) {
-					draw_options();
-					ImGui::SameLine();
-					draw_icons();
-				} else {
-					draw_icons();
-					if (has_options) { ImGui::SameLine(); draw_options(); }
-				}
-			} else {
-				if (rev_y && has_options) {
-					draw_options();
-					ImGui::Separator();
-					draw_icons();
-				} else {
-					draw_icons();
-					if (has_options) { ImGui::Separator(); draw_options(); }
-				}
-			}
-		}
-
-		last_wsize = ImGui::GetWindowSize();
 	}
 	ImGui::End();
 	ImGui::PopStyleColor(5);
+
+	// Remember the measured size for hit-testing outside this frame.
+	if (vert) { g_toolbar_v_w = tsize.x; g_toolbar_v_h = tsize.y; }
+	else      { g_toolbar_h_w = tsize.x; g_toolbar_h_h = tsize.y; }
 
 	ImGui::Render();
 	ImGui_ImplCairo_RenderDrawData(cr, ImGui::GetDrawData());

@@ -256,7 +256,9 @@ static void render(struct escreen_output *output) {
 		draw_handle(cr, l_x, l_y + l_h/2, accent);
 		draw_handle(cr, l_x + l_w, l_y + l_h/2, accent);
 
-		// Tool cursor preview
+		// Tool cursor preview — needs full clip reset since it can float
+		// outside the selection (e.g. the eyedropper swatch and hex label)
+		cairo_reset_clip(cr);
 		struct escreen_seat *seat_iter;
 		wl_list_for_each(seat_iter, &state->seats, link) {
 			tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
@@ -268,8 +270,7 @@ static void render(struct escreen_output *output) {
 			}
 		}
 
-		// Toolbar UI — needs full clip reset since it floats outside selection
-		cairo_reset_clip(cr);
+		// Toolbar UI
 		tools_draw_ui(state, cr);
 	}
 	cairo_restore(cr);

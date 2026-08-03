@@ -124,10 +124,10 @@ static void colorpicker_on_draw_preview(struct escreen_state *state,
 	if (now - g_last_pick_ms < 150) {
 		pop_anim = 1.0 - (double)(now - g_last_pick_ms) / 150.0;
 	}
-	double base_r = 10.0 + (pop_anim * 6.0);
+	double base_r = 16.0 + (pop_anim * 6.0);
 
     // Magnifier ring with sampled color
-	cairo_set_line_width(cr, 4.0);
+	cairo_set_line_width(cr, 6.0);
 	cairo_arc(cr, x, y, base_r, 0, 2 * M_PI);
 	cairo_set_source_rgba(cr, r, g, b, 1.0);
 	cairo_stroke_preserve(cr);
@@ -140,7 +140,7 @@ static void colorpicker_on_draw_preview(struct escreen_state *state,
 	cairo_stroke(cr);
     
     // Inner contrast border
-	cairo_arc(cr, x, y, base_r - 2.0, 0, 2 * M_PI);
+	cairo_arc(cr, x, y, base_r - 3.5, 0, 2 * M_PI);
 	cairo_stroke(cr);
 
     // Fine crosshair in the center
@@ -163,19 +163,27 @@ static void colorpicker_on_draw_preview(struct escreen_state *state,
 		char hex[8];
 		snprintf(hex, sizeof(hex), "#%02X%02X%02X", ri, gi, bi);
 
-		const double LBL_W = 52.0;
-		const double LBL_H = 14.0;
-		const double lx = x + 12.0;
-		const double ly = y + 12.0;
+		const double font_size = 13.0;
+		const double pad = 6.0;
+		cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+		cairo_set_font_size(cr, font_size);
+
+		cairo_text_extents_t te;
+		cairo_text_extents(cr, hex, &te);
+
+		const double LBL_W = te.width + pad * 2.0;
+		const double LBL_H = font_size + pad * 2.0;
+		const double lx = x - LBL_W * 0.5;
+		const double ly = y + 17.0;
 
 		cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.68);
 		cairo_rectangle(cr, lx, ly, LBL_W, LBL_H);
 		cairo_fill(cr);
 
 		cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.95);
-		cairo_select_font_face(cr, "monospace", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-		cairo_set_font_size(cr, 9.5);
-		cairo_move_to(cr, lx + 3.0, ly + LBL_H - 3.5);
+		cairo_move_to(cr,
+			lx + (LBL_W - te.width) * 0.5 - te.x_bearing,
+			ly + (LBL_H - te.height) * 0.5 - te.y_bearing);
 		cairo_show_text(cr, hex);
 	}
 
