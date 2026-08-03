@@ -8,10 +8,6 @@ static double sx, sy;
 
 static int current_stamp_counter = 1;
 
-extern "C" void tool_stamp_reset_counter() {
-	current_stamp_counter = 1;
-}
-
 // Exposed to tools.cpp
 int* tool_stamp_get_counter_ptr() {
 	return &current_stamp_counter;

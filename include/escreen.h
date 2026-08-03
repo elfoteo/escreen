@@ -144,6 +144,13 @@ struct escreen_state {
 		bool   toolbar_pinned;
 		double toolbar_pinned_x;
 		double toolbar_pinned_y;
+
+		// Hand-rolled toolbar UI state
+		bool   toolbar_dragging;
+		double toolbar_drag_ox, toolbar_drag_oy;
+		uint64_t toolbar_last_click_ms;
+		double toolbar_last_click_x, toolbar_last_click_y;
+		int    ui_active; // widget with mouse capture, UI_NONE when idle (tools.cpp)
 	} sketching;
 
 	escreen_config_t config;

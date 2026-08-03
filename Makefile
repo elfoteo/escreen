@@ -3,7 +3,7 @@
 CC = gcc
 CXX = g++
 CFLAGS = -Wall -Wextra -g -O2 -Iinclude -Ibuild $(shell pkg-config --cflags wayland-client wayland-cursor cairo libpng xkbcommon pixman-1)
-CXXFLAGS = -Wall -Wextra -g -O2 -Iinclude -Ibuild -Iimgui $(shell pkg-config --cflags wayland-client wayland-cursor cairo libpng xkbcommon pixman-1)
+CXXFLAGS = -Wall -Wextra -g -O2 -Iinclude -Ibuild $(shell pkg-config --cflags wayland-client wayland-cursor cairo libpng xkbcommon pixman-1)
 LDFLAGS = $(shell pkg-config --libs wayland-client wayland-cursor cairo libpng xkbcommon pixman-1) -lm -lstdc++
 
 PROTOCOLS_DIR = protocols
@@ -33,15 +33,12 @@ PROTOCOL_SOURCES = \
 
 SOURCES = $(SRC_DIR)/escreen.c $(SRC_DIR)/selection.c $(SRC_DIR)/freeze.c $(SRC_DIR)/image.c $(SRC_DIR)/clipboard.c \
           $(SRC_DIR)/tool_brush.cpp $(SRC_DIR)/tool_blur.cpp $(SRC_DIR)/tool_line.cpp $(SRC_DIR)/tool_rect.cpp $(SRC_DIR)/tool_arrow.cpp $(SRC_DIR)/tool_stamp.cpp $(SRC_DIR)/tool_text.cpp $(SRC_DIR)/tool_lasso.cpp $(SRC_DIR)/tool_colorpicker.cpp \
-          $(SRC_DIR)/tools.cpp $(SRC_DIR)/imgui_impl_cairo.cpp \
-          imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_widgets.cpp imgui/imgui_tables.cpp
+          $(SRC_DIR)/tools.cpp
 OBJECTS = $(BUILD_DIR)/escreen.o $(BUILD_DIR)/selection.o $(BUILD_DIR)/freeze.o $(BUILD_DIR)/image.o $(BUILD_DIR)/clipboard.o $(BUILD_DIR)/config.o \
           $(BUILD_DIR)/tool_brush.o $(BUILD_DIR)/tool_blur.o $(BUILD_DIR)/tool_line.o $(BUILD_DIR)/tool_rect.o $(BUILD_DIR)/tool_arrow.o $(BUILD_DIR)/tool_stamp.o $(BUILD_DIR)/tool_text.o $(BUILD_DIR)/tool_lasso.o $(BUILD_DIR)/tool_colorpicker.o \
-          $(BUILD_DIR)/tools.o $(BUILD_DIR)/imgui_impl_cairo.o \
-          $(BUILD_DIR)/imgui.o $(BUILD_DIR)/imgui_draw.o $(BUILD_DIR)/imgui_widgets.o $(BUILD_DIR)/imgui_tables.o \
+          $(BUILD_DIR)/tools.o \
           $(PROTOCOL_SOURCES:.c=.o)
 HEADERS = include/escreen.h include/tools.h $(PROTOCOL_HEADERS)
-IMGUI_HEADERS = imgui/imgui.h imgui/imconfig.h imgui/imgui_internal.h imgui/imstb_rectpack.h imgui/imstb_textedit.h imgui/imstb_truetype.h
 
 SCANNER = wayland-scanner
 
@@ -81,13 +78,7 @@ $(BUILD_DIR)/config.o: $(SRC_DIR)/config.c $(HEADERS)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS) $(IMGUI_HEADERS)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/imgui_impl_cairo.o: $(SRC_DIR)/imgui_impl_cairo.cpp $(IMGUI_HEADERS)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: imgui/%.cpp $(IMGUI_HEADERS)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:

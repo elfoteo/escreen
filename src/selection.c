@@ -263,6 +263,7 @@ static void render(struct escreen_output *output) {
 		wl_list_for_each(seat_iter, &state->seats, link) {
 			tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
 			if (tool && tool->on_draw_preview &&
+				!tools_is_on_toolbar(state, seat_iter->x, seat_iter->y) &&
 				seat_iter->selection_status != SELECTION_RESIZING &&
 				seat_iter->selection_status != SELECTION_MOVING &&
 				seat_iter->selection_status != SELECTION_DRAGGING) {

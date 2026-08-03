@@ -1,15 +1,10 @@
-#include "imgui.h"
-#include "imgui_internal.h"
-#include "escreen.h"
-#include "tools.h"
-#include <vector>
-#include <float.h>
 #include <stdlib.h>
 #include <stdio.h>
-
-extern void ImGui_ImplCairo_RenderDrawData(cairo_t* cr, ImDrawData* draw_data);
-extern void ImGui_ImplCairo_CreateFontsTexture();
-extern void ImGui_ImplCairo_DestroyFontsTexture();
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include "escreen.h"
+#include "tools.h"
 
 extern "C" tool_interface_t tool_brush;
 extern "C" tool_interface_t tool_blur;
@@ -30,56 +25,188 @@ tool_interface_t tool_select = {
 	NULL, NULL, NULL, NULL, NULL, NULL // Callbacks including on_draw_preview
 };
 
-void tools_init(struct escreen_state *state) {
-	state->sketching.tools[TOOL_SELECT]      = &tool_select;
-	state->sketching.tools[TOOL_BRUSH]       = &tool_brush;
-	state->sketching.tools[TOOL_BLUR]        = &tool_blur;
-	state->sketching.tools[TOOL_LINE]        = &tool_line;
-	state->sketching.tools[TOOL_RECTANGLE]   = &tool_rectangle;
-	state->sketching.tools[TOOL_ARROW]       = &tool_arrow;
-	state->sketching.tools[TOOL_STAMP]       = &tool_stamp;
-	state->sketching.tools[TOOL_TEXT]        = &tool_text;
-	state->sketching.tools[TOOL_LASSO]       = &tool_lasso;
-	state->sketching.tools[TOOL_COLORPICKER] = &tool_colorpicker;
-	
-	state->sketching.active_tool = state->sketching.tools[TOOL_SELECT];
-	state->sketching.text_buffer[0] = '\0';
-	
-	state->sketching.r = 1.0f; state->sketching.g = 0.0f; state->sketching.b = 0.0f; state->sketching.a = 1.0f;
-	state->sketching.thickness = 5.0f;
-	state->sketching.hardness = 0.5f;
-	state->sketching.filled = false;
-	state->sketching.is_vertical = false;
-	
-	state->sketching.history_count = 0;
-	state->sketching.history_capacity = 16;
-	state->sketching.history = (action_t*)calloc(state->sketching.history_capacity, sizeof(action_t));
-	
-	state->sketching.drawing = false;
+// ---- small helpers ---------------------------------------------------------
 
-	IMGUI_CHECKVERSION();
-	ImGui::CreateContext();
-	ImGuiIO& io = ImGui::GetIO();
-	io.IniFilename = NULL;
-	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-	
-	ImGui_ImplCairo_CreateFontsTexture();
+static uint64_t ui_get_ms() {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
 }
 
+static double clamp01(double v) { return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v); }
 
-void tools_cleanup(struct escreen_state *state) {
-	ImGui_ImplCairo_DestroyFontsTexture();
-	for (size_t i = 0; i < state->sketching.history_count; i++) {
-		if (state->sketching.history[i].points) free(state->sketching.history[i].points);
-		if (state->sketching.history[i].text) free(state->sketching.history[i].text);
+static void rgb_to_hsv(double r, double g, double b, double *h, double *s, double *v) {
+	double max = fmax(r, fmax(g, b)), min = fmin(r, fmin(g, b));
+	double d = max - min;
+	*v = max;
+	*s = (max == 0.0) ? 0.0 : d / max;
+	if (d == 0.0) { *h = 0.0; return; }
+	double hh;
+	if (max == r) hh = fmod((g - b) / d, 6.0);
+	else if (max == g) hh = (b - r) / d + 2.0;
+	else hh = (r - g) / d + 4.0;
+	hh *= 60.0;
+	if (hh < 0.0) hh += 360.0;
+	*h = hh / 360.0;
+}
+
+static void hsv_to_rgb(double h, double s, double v, double *r, double *g, double *b) {
+	if (s <= 0.0) { *r = *g = *b = v; return; }
+	h = fmod(h, 1.0); if (h < 0.0) h += 1.0;
+	int i = (int)(h * 6.0);
+	double f = h * 6.0 - i;
+	double p = v * (1.0 - s);
+	double q = v * (1.0 - s * f);
+	double t = v * (1.0 - s * (1.0 - f));
+	switch (i % 6) {
+		case 0: *r=v; *g=t; *b=p; break;
+		case 1: *r=q; *g=v; *b=p; break;
+		case 2: *r=p; *g=v; *b=t; break;
+		case 3: *r=p; *g=q; *b=v; break;
+		case 4: *r=t; *g=p; *b=v; break;
+		default: *r=v; *g=p; *b=q; break;
 	}
-	free(state->sketching.history);
-	if (state->sketching.history_layer) {
-		cairo_surface_destroy(state->sketching.history_layer);
-		state->sketching.history_layer = NULL;
+}
+
+// ---- widget rect / layout ---------------------------------------------------
+
+typedef struct { double x, y, w, h; } ui_rect_t;
+
+typedef struct {
+	double x, y, w, h;
+	ui_rect_t handle;
+	ui_rect_t icons[TOOL_COUNT];
+	ui_rect_t wheel, hue;           // SV square + hue strip of the color picker
+	ui_rect_t sl_thick, sl_hard;    // sliders
+	ui_rect_t cb_fill;              // fill checkbox
+	ui_rect_t stamp_minus, stamp_num, stamp_plus;
+} ui_layout_t;
+
+// Widget ids, shared between drawing and hit-testing.
+enum {
+	UI_NONE = 0,
+	UI_HANDLE,
+	UI_ICON_BASE,        // + tool_type  (icons occupy UI_ICON_BASE..UI_ICON_BASE+TOOL_COUNT-1)
+	UI_WHEEL = UI_ICON_BASE + (int)TOOL_COUNT,
+	UI_HUE,
+	UI_SLIDER_THICK,
+	UI_SLIDER_HARD,
+	UI_CHECKBOX_FILL,
+	UI_STAMP_MINUS,
+	UI_STAMP_PLUS,
+};
+#define UI_ICON(type) (UI_ICON_BASE + (int)(type))
+
+static const double UI_PAD         = 8.0;
+static const double UI_GRIP_STEP   = 4.0;
+static const double UI_GRIP_R      = 1.4;
+static const double UI_HANDLE_PAD  = 10.0;  // padding around the grip graphics
+static const double UI_HANDLE_MARG = 4.0;   // vertical margin around the drag button
+static const double UI_GRIP_W      = 4.0 * UI_GRIP_STEP + 2.0 * UI_GRIP_R; // 5 grip columns
+static const double UI_GRIP_H      = 2.0 * UI_GRIP_STEP + 2.0 * UI_GRIP_R; // 3 grip rows
+static const double UI_HANDLE_W    = UI_GRIP_W + 2.0 * UI_HANDLE_PAD;      // drag button width
+static const double UI_HANDLE_H    = UI_GRIP_H + 2.0 * UI_HANDLE_PAD + 2.0 * UI_HANDLE_MARG; // handle zone height
+static const double UI_ICON_S   = 32.0;
+static const double UI_GAP      = 4.0;
+static const double UI_SV       = 90.0;   // color picker SV square
+static const double UI_HUE_W    = 10.0;
+static const double UI_SLIDER_W = 120.0;
+static const double UI_SLIDER_H = 16.0;
+static const double UI_CB       = 14.0;
+static const double UI_STAMP_H  = 24.0;
+
+static bool pt_in_rect(ui_rect_t r, double x, double y) {
+	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+static void ui_compute_layout(struct escreen_state *state, bool vertical, ui_layout_t *L) {
+	memset(L, 0, sizeof(*L));
+	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+	bool color = tool->show_color;
+	bool thick = tool->show_thickness;
+	bool hard  = tool->show_hardness;
+	bool fill  = tool->show_fill;
+	bool stamp = tool->type == TOOL_STAMP;
+
+	double x = UI_PAD, y = UI_HANDLE_H + UI_PAD;
+	double max_x = UI_PAD, max_y = UI_HANDLE_H + UI_PAD;
+
+	if (vertical) {
+		// Icon column on the left, options to the right.
+		for (int t = 0; t < TOOL_COUNT; t++) {
+			L->icons[t] = (ui_rect_t){UI_PAD, y, UI_ICON_S, UI_ICON_S};
+			y += UI_ICON_S + UI_GAP;
+		}
+		max_y = fmax(max_y, y - UI_GAP);
+		max_x = fmax(max_x, UI_PAD + UI_ICON_S);
+
+		double ox = UI_PAD + UI_ICON_S + 8.0;
+		y = UI_HANDLE_H + UI_PAD;
+		if (color) {
+			L->wheel = (ui_rect_t){ox, y, UI_SV, UI_SV};
+			L->hue   = (ui_rect_t){ox + UI_SV + 4.0, y, UI_HUE_W, UI_SV};
+			y += UI_SV + 8.0;
+			max_x = fmax(max_x, ox + UI_SV + 4.0 + UI_HUE_W);
+		}
+		if (thick) { L->sl_thick = (ui_rect_t){ox, y, UI_SLIDER_W, UI_SLIDER_H}; y += UI_SLIDER_H + 8.0; max_x = fmax(max_x, ox + UI_SLIDER_W); }
+		if (hard)  { L->sl_hard  = (ui_rect_t){ox, y, UI_SLIDER_W, UI_SLIDER_H}; y += UI_SLIDER_H + 8.0; }
+		if (fill)  { L->cb_fill  = (ui_rect_t){ox, y, UI_CB, UI_CB}; y += UI_CB + 8.0; }
+		if (stamp) {
+			L->stamp_minus = (ui_rect_t){ox, y, 22, UI_STAMP_H};
+			L->stamp_num   = (ui_rect_t){ox + 26.0, y, 34, UI_STAMP_H};
+			L->stamp_plus  = (ui_rect_t){ox + 64.0, y, 22, UI_STAMP_H};
+			y += UI_STAMP_H + 8.0;
+			max_x = fmax(max_x, ox + 86.0);
+		}
+		max_y = fmax(max_y, y - 8.0);
+	} else {
+		// Icon row on top, options to the right / below.
+		for (int t = 0; t < TOOL_COUNT; t++) {
+			L->icons[t] = (ui_rect_t){x, y, UI_ICON_S, UI_ICON_S};
+			x += UI_ICON_S + UI_GAP;
+		}
+		max_x = fmax(max_x, x - UI_GAP);
+		max_y = fmax(max_y, y + UI_ICON_S);
+
+		if (color) {
+			L->wheel = (ui_rect_t){x, y, UI_SV, UI_SV};
+			L->hue   = (ui_rect_t){x + UI_SV + 4.0, y, UI_HUE_W, UI_SV};
+			x += UI_SV + 4.0 + UI_HUE_W + 8.0;
+			max_x = fmax(max_x, x - 8.0);
+			max_y = fmax(max_y, y + UI_SV);
+		}
+		double oy = y;
+		if (thick) { L->sl_thick = (ui_rect_t){x, oy, UI_SLIDER_W, UI_SLIDER_H}; oy += UI_SLIDER_H + 8.0; max_x = fmax(max_x, x + UI_SLIDER_W); }
+		if (hard)  { L->sl_hard  = (ui_rect_t){x, oy, UI_SLIDER_W, UI_SLIDER_H}; oy += UI_SLIDER_H + 8.0; }
+		if (fill)  { L->cb_fill  = (ui_rect_t){x, oy, UI_CB, UI_CB}; oy += UI_CB + 8.0; }
+		if (stamp) {
+			L->stamp_minus = (ui_rect_t){x, oy, 22, UI_STAMP_H};
+			L->stamp_num   = (ui_rect_t){x + 26.0, oy, 34, UI_STAMP_H};
+			L->stamp_plus  = (ui_rect_t){x + 64.0, oy, 22, UI_STAMP_H};
+			oy += UI_STAMP_H + 8.0;
+			max_x = fmax(max_x, x + 86.0);
+		}
+		max_y = fmax(max_y, oy - 8.0);
 	}
-	if (state->sketching.lasso_points) free(state->sketching.lasso_points);
-	ImGui::DestroyContext();
+
+	L->w = max_x + UI_PAD;
+	L->h = max_y + UI_PAD;
+	double hh = UI_HANDLE_H - UI_HANDLE_MARG * 2.0;
+	L->handle = (ui_rect_t){ (L->w - UI_HANDLE_W) / 2.0, UI_HANDLE_MARG, UI_HANDLE_W, hh };
+}
+
+static void ui_layout_translate(ui_layout_t *L, double dx, double dy) {
+	L->x = dx; L->y = dy;
+	L->handle.x += dx; L->handle.y += dy;
+	for (int t = 0; t < TOOL_COUNT; t++) { L->icons[t].x += dx; L->icons[t].y += dy; }
+	L->wheel.x += dx; L->wheel.y += dy;
+	L->hue.x += dx; L->hue.y += dy;
+	L->sl_thick.x += dx; L->sl_thick.y += dy;
+	L->sl_hard.x += dx; L->sl_hard.y += dy;
+	L->cb_fill.x += dx; L->cb_fill.y += dy;
+	L->stamp_minus.x += dx; L->stamp_minus.y += dy;
+	L->stamp_num.x += dx; L->stamp_num.y += dy;
+	L->stamp_plus.x += dx; L->stamp_plus.y += dy;
 }
 
 static void get_toolbar_placement(struct escreen_state *state, double w_h, double h_h, double w_v, double h_v, double *out_x, double *out_y, bool *out_vertical) {
@@ -113,7 +240,7 @@ static void get_toolbar_placement(struct escreen_state *state, double w_h, doubl
 
 		bool intersect_x = px < sx + sw && px + cw > sx;
 		bool intersect_y = py < sy + sh && py + ch > sy;
-		
+
 		*res_x = px;
 		*res_y = py;
 		return !(intersect_x && intersect_y);
@@ -140,337 +267,26 @@ static void get_toolbar_placement(struct escreen_state *state, double w_h, doubl
 	if (*out_y + h_v > max_y - 4) *out_y = max_y - h_v - 4;
 }
 
-// Actual toolbar sizes measured from the last drawn frame (from the real
-// widget layout). Placement uses these instead of guessed constants so the
-// panel hugs the selection for the active tool's true width, which changes
-// with the tool's options.
-static double g_toolbar_v_w = 0.0, g_toolbar_v_h = 0.0; // vertical panel size
-static double g_toolbar_h_w = 0.0, g_toolbar_h_h = 0.0; // horizontal panel size
+// Current toolbar layout at its on-screen position (auto-placed or pinned).
+static void ui_get_current_layout(struct escreen_state *state, ui_layout_t *out) {
+	ui_layout_t Lv, Lh;
+	ui_compute_layout(state, true, &Lv);
+	ui_compute_layout(state, false, &Lh);
 
-static void get_toolbar_rect(struct escreen_state *state, double *x, double *y, double *w, double *h) {
-	double w_v = g_toolbar_v_w, h_v = g_toolbar_v_h;
-	double w_h = g_toolbar_h_w, h_h = g_toolbar_h_h;
+	double x, y;
+	bool vertical;
+	get_toolbar_placement(state, Lh.w, Lh.h, Lv.w, Lv.h, &x, &y, &vertical);
+	ui_layout_t *L = vertical ? &Lv : &Lh;
 
-	// Nothing has been drawn yet (very first frame): fall back to a panel
-	// sized for an icon column next to the colour wheel. The measured size
-	// replaces this as soon as the toolbar renders once.
-	if (w_v <= 0.0) { w_v = 216.0; h_v = 392.0; }
-	if (w_h <= 0.0) { w_h = 380.0; h_h = 60.0; }
-
-	get_toolbar_placement(state, w_h, h_h, w_v, h_v, x, y, &state->sketching.is_vertical);
-	
-	if (state->sketching.is_vertical) {
-		*w = w_v; *h = h_v;
-	} else {
-		*w = w_h; *h = h_h;
+	if (state->sketching.toolbar_pinned) {
+		x = state->sketching.toolbar_pinned_x;
+		y = state->sketching.toolbar_pinned_y;
 	}
-}
 
-bool tools_is_on_toolbar(struct escreen_state *state, double x, double y) {
-	if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) {
-		return true;
-	}
-	double tx, ty, tw, th;
-	get_toolbar_rect(state, &tx, &ty, &tw, &th);
-	return (x >= tx && x < tx + tw && y >= ty && y < ty + th);
-}
-
-static bool IconButton(struct escreen_state *state, const char* tooltip, tool_type_t type, bool is_active) {
-    ImVec2 size(32, 32);
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::InvisibleButton(tooltip, size);
-    bool hovered = ImGui::IsItemHovered();
-    
-    if (hovered) {
-        ImGui::SetTooltip("%s", tooltip);
-    }
-    
-    ImColor bg_col = is_active ? ImColor((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a) : ImColor(0, 0, 0, 0);
-	ImColor fg_col = is_active ? ImColor(1.0f, 1.0f, 1.0f, 1.0f) : ImColor(0.7f, 0.7f, 0.7f, 1.0f);
-	
-	if (hovered && !is_active) bg_col = ImColor((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a);
-
-	ImDrawList* draw = ImGui::GetWindowDrawList();
-	draw->AddRectFilled(pos, ImVec2(pos.x + 32, pos.y + 32), bg_col, 4.0f);
-    
-    ImVec2 c = ImVec2(pos.x + size.x/2, pos.y + size.y/2);
-    if (type == TOOL_SELECT) {
-        draw->AddRect(ImVec2(c.x - 8, c.y - 8), ImVec2(c.x + 8, c.y + 8), fg_col, 0, 0, 1.5f);
-        draw->AddRectFilled(ImVec2(c.x - 10, c.y - 10), ImVec2(c.x - 6, c.y - 6), fg_col);
-        draw->AddRectFilled(ImVec2(c.x + 6, c.y + 6), ImVec2(c.x + 10, c.y + 10), fg_col);
-        draw->AddRectFilled(ImVec2(c.x - 10, c.y + 6), ImVec2(c.x - 6, c.y + 10), fg_col);
-        draw->AddRectFilled(ImVec2(c.x + 6, c.y - 10), ImVec2(c.x + 10, c.y - 6), fg_col);
-    } else if (type == TOOL_BRUSH) {
-        draw->AddBezierCubic(ImVec2(c.x - 8, c.y + 8), ImVec2(c.x - 4, c.y - 8), 
-                             ImVec2(c.x + 4, c.y + 8), ImVec2(c.x + 8, c.y - 8), fg_col, 2.0f);
-    } else if (type == TOOL_BLUR) {
-        draw->AddTriangleFilled(ImVec2(c.x, c.y - 8), ImVec2(c.x - 5, c.y + 2), ImVec2(c.x + 5, c.y + 2), fg_col);
-        draw->AddCircleFilled(ImVec2(c.x, c.y + 3), 5.0f, fg_col);
-    } else if (type == TOOL_LINE) {
-        draw->AddLine(ImVec2(c.x - 8, c.y + 8), ImVec2(c.x + 8, c.y - 8), fg_col, 2.0f);
-    } else if (type == TOOL_RECTANGLE) {
-        draw->AddRect(ImVec2(c.x - 10, c.y - 6), ImVec2(c.x + 9, c.y + 5), fg_col, 0, 0, 2.0f);
-    } else if (type == TOOL_ARROW) {
-        draw->AddLine(ImVec2(c.x - 8, c.y + 8), ImVec2(c.x + 8, c.y - 8), fg_col, 2.0f);
-        draw->AddLine(ImVec2(c.x + 8, c.y - 8), ImVec2(c.x - 2, c.y - 8), fg_col, 2.0f);
-        draw->AddLine(ImVec2(c.x + 8, c.y - 8), ImVec2(c.x + 8, c.y + 2), fg_col, 2.0f);
-    } else if (type == TOOL_STAMP) {
-        draw->AddCircleFilled(ImVec2(c.x, c.y), 8.0f, fg_col);
-        draw->AddText(ImVec2(c.x - 3, c.y - 7), IM_COL32(255, 255, 255, 255), "1");
-    } else if (type == TOOL_TEXT) {
-        // Clean 'T' icon: top bar and stem only
-        draw->AddLine(ImVec2(c.x - 7, c.y - 7), ImVec2(c.x + 7, c.y - 7), fg_col, 2.0f); // Top bar
-        draw->AddLine(ImVec2(c.x, c.y - 7), ImVec2(c.x, c.y + 8), fg_col, 2.0f);         // Stem
-    } else if (type == TOOL_LASSO) {
-        // Lasso icon: a dotted partial loop
-        float r = 9.0f;
-        for (float a = -0.5f; a < 5.0f; a += 0.8f) { // partial ellipse loop
-            draw->AddCircleFilled(ImVec2(c.x + cosf(a) * r, c.y + sinf(a) * (r * 0.7f)), 1.5f, fg_col);
-        }
-        // Small "rope end" detail
-        draw->AddLine(ImVec2(c.x + 8, c.y), ImVec2(c.x + 12, c.y + 4), fg_col, 1.5f);
-    } else if (type == TOOL_COLORPICKER) {
-        // Colorpicker icon: a scope ring with a central cross and a solid droplet 
-        draw->AddCircle(c, 7.0f, fg_col, 0, 1.5f);
-        draw->AddLine(ImVec2(c.x - 3, c.y), ImVec2(c.x + 4, c.y), fg_col, 1.5f);
-        draw->AddLine(ImVec2(c.x, c.y - 3), ImVec2(c.x, c.y + 4), fg_col, 1.5f);
-        draw->AddCircleFilled(ImVec2(c.x + 7, c.y + 7), 3.0f, fg_col);
-    }
-    
-    return clicked;
-}
-
-// ---- Drag handle helpers -------------------------------------------------
-
-// Draw a 2×N or N×2 dot-grid grip in the centre of [rect_min, rect_max].
-static void draw_grip_dots(ImDrawList *draw,
-                           ImVec2 rect_min, ImVec2 rect_max,
-                           bool horizontal, ImU32 col)
-{
-	const float cx = (rect_min.x + rect_max.x) * 0.5f;
-	const float cy = (rect_min.y + rect_max.y) * 0.5f;
-	const float STEP = 4.0f;
-	const float DOT_R = 1.4f;
-
-	if (horizontal) {
-		// Two rows, five columns
-		for (int col_i = -2; col_i <= 2; col_i++)
-			for (int row_i = -1; row_i <= 1; row_i++)
-				draw->AddCircleFilled(
-					ImVec2(cx + col_i * STEP, cy + row_i * STEP),
-					DOT_R, col);
-	} else {
-		// Five rows, two columns
-		for (int row_i = -2; row_i <= 2; row_i++)
-			for (int col_i = -1; col_i <= 1; col_i++)
-				draw->AddCircleFilled(
-					ImVec2(cx + col_i * STEP, cy + row_i * STEP),
-					DOT_R, col);
-	}
-}
-
-// ---- Main UI entry point --------------------------------------------------
-
-void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
-	ImGuiIO& io = ImGui::GetIO();
-	io.DisplaySize = ImVec2((float)state->total_max_x, (float)state->total_max_y);
-	ImGui::NewFrame();
-
-	const bool pinned = state->sketching.toolbar_pinned;
-	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
-	const bool has_options = tool->show_color || tool->show_thickness ||
-	                          tool->show_hardness || tool->show_fill ||
-	                          tool->type == TOOL_STAMP || tool->type == TOOL_TEXT;
-
-	// Handle strip height; the strip is drawn as an overlay at the end of
-	// the frame so it spans the final window width without contributing to
-	// the measured content width (which would keep the window at an old,
-	// wider size forever).
-	const float HANDLE_H = 12.0f;
-	auto draw_handle_spacer = [&]() {
-		ImGui::Dummy(ImVec2(0.0f, HANDLE_H));
-		ImGui::Spacing();
-	};
-
-	// ----------------------------------------------------------------
-	// Tool icons
-	// ----------------------------------------------------------------
-	auto draw_icons = [&](bool vert) {
-		if (vert) ImGui::BeginGroup();
-		if (IconButton(state, "Select Area",       TOOL_SELECT,      tool == state->sketching.tools[TOOL_SELECT]))      tools_set_active(state, TOOL_SELECT);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Lasso Select Area",  TOOL_LASSO,       tool == state->sketching.tools[TOOL_LASSO]))       tools_set_active(state, TOOL_LASSO);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Brush Tool",         TOOL_BRUSH,       tool == state->sketching.tools[TOOL_BRUSH]))       tools_set_active(state, TOOL_BRUSH);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Blur Tool",          TOOL_BLUR,        tool == state->sketching.tools[TOOL_BLUR]))        tools_set_active(state, TOOL_BLUR);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Line Tool",          TOOL_LINE,        tool == state->sketching.tools[TOOL_LINE]))        tools_set_active(state, TOOL_LINE);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Rectangle Tool",     TOOL_RECTANGLE,   tool == state->sketching.tools[TOOL_RECTANGLE]))   tools_set_active(state, TOOL_RECTANGLE);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Arrow Tool",         TOOL_ARROW,       tool == state->sketching.tools[TOOL_ARROW]))       tools_set_active(state, TOOL_ARROW);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Stamp Tool",         TOOL_STAMP,       tool == state->sketching.tools[TOOL_STAMP]))       tools_set_active(state, TOOL_STAMP);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Text Tool",          TOOL_TEXT,        tool == state->sketching.tools[TOOL_TEXT]))        tools_set_active(state, TOOL_TEXT);
-		if (!vert) ImGui::SameLine();
-		if (IconButton(state, "Color Picker",       TOOL_COLORPICKER, tool == state->sketching.tools[TOOL_COLORPICKER])) tools_set_active(state, TOOL_COLORPICKER);
-		if (vert) ImGui::EndGroup();
-	};
-
-	// ----------------------------------------------------------------
-	// Tool options (colour swatch, sliders, etc.)
-	// ----------------------------------------------------------------
-	auto draw_options = [&](bool vert) {
-		if (vert) ImGui::BeginGroup();
-
-		// The option widgets keep their natural widths; the window is sized
-		// from the actual layout, so each tool's panel is measured on the
-		// fly rather than forced to a constant.
-		const float wheel_w  = vert ? 160.0f : 240.0f;
-		const float option_w = vert ? 130.0f : 120.0f;
-
-		// Colour wheel embedded directly in the toolbar (no popup).
-		if (tool->show_color) {
-			float color[3] = {(float)state->sketching.r, (float)state->sketching.g, (float)state->sketching.b};
-			ImGui::PushItemWidth(wheel_w);
-			if (ImGui::ColorPicker3("##ColorWheel", color,
-					ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoSidePreview |
-					ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoOptions |
-					ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_PickerHueWheel)) {
-				state->sketching.r = color[0];
-				state->sketching.g = color[1];
-				state->sketching.b = color[2];
-			}
-			ImGui::PopItemWidth();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Color");
-			ImGui::Spacing();
-		}
-
-		// Remaining options flow on a new row below the colour wheel.
-		bool row_started = false;
-		auto next = [&]() {
-			if (!row_started) { row_started = true; return; }
-			if (vert) ImGui::Spacing(); else ImGui::SameLine();
-		};
-
-		if (tool->show_thickness) {
-			next();
-			ImGui::PushItemWidth(option_w);
-			float thickness = (float)state->sketching.thickness;
-			if (ImGui::SliderFloat("##Size", &thickness, 1.0f, 100.0f, "Size: %.0f")) {
-				state->sketching.thickness = thickness;
-			}
-			ImGui::PopItemWidth();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Size");
-		}
-		if (tool->show_hardness) {
-			next();
-			ImGui::PushItemWidth(option_w);
-			float hardness = (float)state->sketching.hardness;
-			if (ImGui::SliderFloat("##Hardness", &hardness, 0.0f, 1.0f, "Hard: %.2f")) {
-				state->sketching.hardness = hardness;
-			}
-			ImGui::PopItemWidth();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hardness");
-		}
-		if (tool->show_fill) {
-			next();
-			ImGui::PushItemWidth(option_w);
-			bool filled = state->sketching.filled;
-			if (ImGui::Checkbox("Fill", &filled)) {
-				state->sketching.filled = filled;
-			}
-			ImGui::PopItemWidth();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fill");
-		}
-		if (tool->type == TOOL_STAMP) {
-			next();
-			int* counter_ptr = tool_stamp_get_counter_ptr();
-			ImGui::PushItemWidth(vert ? 95 : 75);
-			if (ImGui::InputInt("##StampCounter", counter_ptr)) {
-				if (*counter_ptr < 1) *counter_ptr = 1;
-			}
-			ImGui::PopItemWidth();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Next Number");
-			if (ImGui::Button("Reset to 1")) {
-				*counter_ptr = 1;
-			}
-		}
-		if (vert) ImGui::EndGroup();
-	};
-
-	// The toolbar content as laid out inside a window. Whether the option
-	// column comes before or after the icons does not change the size, so
-	// this is used both for the off-screen measurement and the real window.
-	auto draw_content = [&](bool vert) {
-		draw_handle_spacer();
-		draw_icons(vert);
-		if (has_options) {
-			if (vert) ImGui::SameLine(); else ImGui::Separator();
-			draw_options(vert);
-		}
-	};
-
-	// ----------------------------------------------------------------
-	// Measure the exact content size for the active tool BEFORE the
-	// toolbar is positioned. The content is submitted once into an
-	// off-screen throwaway window per orientation; the resulting sizes are
-	// used to place and size the real window in this same frame, so there
-	// is no off-by-one frame when switching between tools.
-	// ----------------------------------------------------------------
-	ImVec2 size_v, size_h;
+	// Clamp inside the monitor containing the toolbar center.
 	{
-		const ImGuiWindowFlags measure_flags =
-			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-			ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
-			ImGuiWindowFlags_NoFocusOnAppearing |
-			ImGuiWindowFlags_NoBringToFrontOnFocus |
-			ImGuiWindowFlags_NoBackground;
-		const ImVec2 measure_pos(-100000.0f, -100000.0f);
-		const ImVec2 measure_size(io.DisplaySize.x, io.DisplaySize.y);
-
-		ImGui::SetNextWindowPos(measure_pos, ImGuiCond_Always);
-		ImGui::SetNextWindowSize(measure_size, ImGuiCond_Always);
-		ImGui::Begin("##ToolbarMeasureV", NULL, measure_flags);
-		draw_content(true);
-		ImGuiWindow *mv = ImGui::GetCurrentWindow();
-		size_v = ImGui::CalcWindowNextAutoFitSize(mv);
-		ImGui::End();
-
-		ImGui::SetNextWindowPos(measure_pos, ImGuiCond_Always);
-		ImGui::SetNextWindowSize(measure_size, ImGuiCond_Always);
-		ImGui::Begin("##ToolbarMeasureH", NULL, measure_flags);
-		draw_content(false);
-		ImGuiWindow *mh = ImGui::GetCurrentWindow();
-		size_h = ImGui::CalcWindowNextAutoFitSize(mh);
-		ImGui::End();
-	}
-
-	// ----------------------------------------------------------------
-	// Auto placement from the measured sizes (also sets is_vertical).
-	// ----------------------------------------------------------------
-	double auto_tx, auto_ty;
-	get_toolbar_placement(state, size_h.x, size_h.y, size_v.x, size_v.y,
-	                      &auto_tx, &auto_ty, &state->sketching.is_vertical);
-	const bool vert = state->sketching.is_vertical;
-	const ImVec2 tsize = vert ? size_v : size_h;
-	const double auto_tw = tsize.x;
-
-	static bool last_vert = state->sketching.is_vertical;
-	if (last_vert != state->sketching.is_vertical) {
-		state->sketching.ui_layout_frames = 12;
-		last_vert = state->sketching.is_vertical;
-	}
-
-	float cx_eff = pinned ? (float)state->sketching.toolbar_pinned_x : (float)auto_tx;
-	float cy_eff = pinned ? (float)state->sketching.toolbar_pinned_y : (float)auto_ty;
-
-	// Clamp out-of-bounds using the measured window size
-	{
-		float center_x = cx_eff + tsize.x * 0.5f;
-		float center_y = cy_eff + tsize.y * 0.5f;
+		double center_x = x + L->w * 0.5;
+		double center_y = y + L->h * 0.5;
 		struct escreen_output *o, *best = NULL;
 		wl_list_for_each(o, &state->outputs, link) {
 			if (center_x >= o->logical_geometry.x && center_x < o->logical_geometry.x + o->logical_geometry.width &&
@@ -480,148 +296,676 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 			}
 		}
 
-		float mon_min_x = best ? (float)best->logical_geometry.x : (float)state->total_min_x;
-		float mon_min_y = best ? (float)best->logical_geometry.y : (float)state->total_min_y;
-		float mon_max_x = best ? (float)(best->logical_geometry.x + best->logical_geometry.width)  : (float)state->total_max_x;
-		float mon_max_y = best ? (float)(best->logical_geometry.y + best->logical_geometry.height) : (float)state->total_max_y;
+		double mon_min_x = best ? best->logical_geometry.x : state->total_min_x;
+		double mon_min_y = best ? best->logical_geometry.y : state->total_min_y;
+		double mon_max_x = best ? best->logical_geometry.x + best->logical_geometry.width  : state->total_max_x;
+		double mon_max_y = best ? best->logical_geometry.y + best->logical_geometry.height : state->total_max_y;
 
-		float min_x = mon_min_x + 4.0f;
-		float max_x = mon_max_x - tsize.x - 4.0f;
-		float min_y = mon_min_y + 4.0f;
-		float max_y = mon_max_y - tsize.y - 4.0f;
+		double min_x = mon_min_x + 4.0;
+		double max_x = mon_max_x - L->w - 4.0;
+		double min_y = mon_min_y + 4.0;
+		double max_y = mon_max_y - L->h - 4.0;
 
-		if (max_x < min_x) max_x = min_x; // Just in case window is wider than screen
+		if (max_x < min_x) max_x = min_x;
 		if (max_y < min_y) max_y = min_y;
 
-		if (cx_eff < min_x) cx_eff = min_x;
-		if (cx_eff > max_x) cx_eff = max_x;
-		if (cy_eff < min_y) cy_eff = min_y;
-		if (cy_eff > max_y) cy_eff = max_y;
-	}
+		if (x < min_x) x = min_x;
+		if (x > max_x) x = max_x;
+		if (y < min_y) y = min_y;
+		if (y > max_y) y = max_y;
 
-	if (pinned) {
-		state->sketching.toolbar_pinned_x = cx_eff;
-		state->sketching.toolbar_pinned_y = cy_eff;
-	}
-
-	ImGui::SetNextWindowSize(tsize, ImGuiCond_Always);
-	ImGui::SetNextWindowPos(ImVec2(cx_eff, cy_eff), ImGuiCond_Always);
-
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4((float)state->config.colors.toolbar_bg.r, (float)state->config.colors.toolbar_bg.g, (float)state->config.colors.toolbar_bg.b, (float)state->config.colors.toolbar_bg.a));
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4((float)state->config.colors.button_hover.r, (float)state->config.colors.button_hover.g, (float)state->config.colors.button_hover.b, (float)state->config.colors.button_hover.a));
-	ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a));
-	ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a));
-	ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4((float)state->config.colors.accent.r, (float)state->config.colors.accent.g, (float)state->config.colors.accent.b, (float)state->config.colors.accent.a));
-
-	if (ImGui::Begin("Escreen Sketching", NULL,
-	                 ImGuiWindowFlags_AlwaysAutoResize |
-	                 ImGuiWindowFlags_NoCollapse       |
-	                 ImGuiWindowFlags_NoTitleBar       |
-	                 ImGuiWindowFlags_NoMove)) {
-
-		// ----------------------------------------------------------------
-		// Layout: icons + options, order determined by which side the
-		// toolbar sits on (rev_x / rev_y mirror the order to keep options
-		// closer to the selection).
-		// When pinned, pivot is always top-left so we fall through to the
-		// default (non-reversed) ordering.
-		// ----------------------------------------------------------------
-		{
-			draw_handle_spacer();
-
-			const bool rev_x = !pinned && (auto_tx + auto_tw / 2.0 < state->result.x);
-			const bool rev_y = !pinned && (auto_ty > state->result.y + state->result.height - 10);
-
-			if (vert) {
-				if (rev_x && has_options) {
-					draw_options(true);
-					ImGui::SameLine();
-					draw_icons(true);
-				} else {
-					draw_icons(true);
-					if (has_options) { ImGui::SameLine(); draw_options(true); }
-				}
-			} else {
-				if (rev_y && has_options) {
-					draw_options(false);
-					ImGui::Separator();
-					draw_icons(false);
-				} else {
-					draw_icons(false);
-					if (has_options) { ImGui::Separator(); draw_options(false); }
-				}
-			}
-		}
-
-		// ----------------------------------------------------------------
-		// Drag handle overlay — drawn after the content so it can span the
-		// final window width without influencing the measured layout.
-		// ----------------------------------------------------------------
-		{
-			ImGuiWindow *win  = ImGui::GetCurrentWindow();
-			ImDrawList *draw  = ImGui::GetWindowDrawList();
-
-			ImRect handle_rect(win->InnerRect.Min,
-			                   ImVec2(win->InnerRect.Min.x + win->InnerRect.GetWidth(),
-			                          win->InnerRect.Min.y + HANDLE_H));
-
-			ImGuiID id = win->GetID("##drag_handle");
-			bool handle_hovered = false, handle_held = false;
-			ImGui::ButtonBehavior(handle_rect, id, &handle_hovered, &handle_held);
-
-			// Subtle background so the strip reads as a handle.
-			if (handle_held || handle_hovered) {
-				ImU32 bg = handle_held ? IM_COL32(255, 255, 255, 41)
-				                       : IM_COL32(255, 255, 255, 20);
-				draw->AddRectFilled(handle_rect.Min, handle_rect.Max, bg);
-			}
-
-			// On first press: snapshot where the window currently is.
-			static ImVec2 drag_win_start;
-			static bool   was_held = false;
-			if (handle_held && !was_held) {
-				drag_win_start = win->Pos;
-				state->sketching.toolbar_pinned   = true;
-				state->sketching.toolbar_pinned_x = drag_win_start.x;
-				state->sketching.toolbar_pinned_y = drag_win_start.y;
-			}
-			was_held = handle_held;
-
-			// While dragging: update stored position by accumulated delta.
-			if (handle_held) {
-				ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
-				state->sketching.toolbar_pinned_x = drag_win_start.x + delta.x;
-				state->sketching.toolbar_pinned_y = drag_win_start.y + delta.y;
-			}
-
-			// Double-click → unpin (return to auto-placement).
-			if (handle_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-				state->sketching.toolbar_pinned = false;
-			}
-
-			// Visual grip dots
-			ImU32 grip_col = handle_held    ? IM_COL32(255, 255, 255, 210) :
-			                 handle_hovered ? IM_COL32(255, 255, 255, 140) :
-			                                  IM_COL32(200, 200, 200,  80);
-			draw_grip_dots(draw, handle_rect.Min, handle_rect.Max,
-			               /*horizontal=*/true, grip_col);
-
-			if (handle_hovered)
-				ImGui::SetTooltip("Drag to pin\nDouble-click to auto-place");
+		if (state->sketching.toolbar_pinned) {
+			state->sketching.toolbar_pinned_x = x;
+			state->sketching.toolbar_pinned_y = y;
 		}
 	}
-	ImGui::End();
-	ImGui::PopStyleColor(5);
 
-	// Remember the measured size for hit-testing outside this frame.
-	if (vert) { g_toolbar_v_w = tsize.x; g_toolbar_v_h = tsize.y; }
-	else      { g_toolbar_h_w = tsize.x; g_toolbar_h_h = tsize.y; }
-
-	ImGui::Render();
-	ImGui_ImplCairo_RenderDrawData(cr, ImGui::GetDrawData());
+	ui_layout_translate(L, x, y);
+	state->sketching.is_vertical = vertical;
+	*out = *L;
 }
 
+// ---- drawing helpers --------------------------------------------------------
 
+static void rounded_rect_path(cairo_t *cr, double x, double y, double w, double h, double r) {
+	if (r > h / 2.0) r = h / 2.0;
+	if (r > w / 2.0) r = w / 2.0;
+	cairo_new_path(cr);
+	cairo_arc(cr, x + r, y + r, r, M_PI, 1.5 * M_PI);
+	cairo_arc(cr, x + w - r, y + r, r, 1.5 * M_PI, 2 * M_PI);
+	cairo_arc(cr, x + w - r, y + h - r, r, 0, 0.5 * M_PI);
+	cairo_arc(cr, x + r, y + h - r, r, 0.5 * M_PI, M_PI);
+	cairo_close_path(cr);
+}
+
+static void fill_rounded(cairo_t *cr, double x, double y, double w, double h, double r,
+		double R, double G, double B, double A) {
+	rounded_rect_path(cr, x, y, w, h, r);
+	cairo_set_source_rgba(cr, R, G, B, A);
+	cairo_fill(cr);
+}
+
+static void stroke_rounded(cairo_t *cr, double x, double y, double w, double h, double r, double lw,
+		double R, double G, double B, double A) {
+	rounded_rect_path(cr, x, y, w, h, r);
+	cairo_set_line_width(cr, lw);
+	cairo_set_source_rgba(cr, R, G, B, A);
+	cairo_stroke(cr);
+}
+
+static void draw_text(cairo_t *cr, double x, double y, const char *s, double size, double R, double G, double B, double A) {
+	cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+	cairo_set_font_size(cr, size);
+	cairo_set_source_rgba(cr, R, G, B, A);
+	cairo_move_to(cr, x, y);
+	cairo_show_text(cr, s);
+}
+
+static void draw_centered_text(cairo_t *cr, double cx, double cy, const char *s, double size, double R, double G, double B, double A) {
+	cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+	cairo_set_font_size(cr, size);
+	cairo_text_extents_t te;
+	cairo_text_extents(cr, s, &te);
+	cairo_set_source_rgba(cr, R, G, B, A);
+	cairo_move_to(cr, cx - te.width / 2.0 - te.x_bearing, cy - te.height / 2.0 - te.y_bearing);
+	cairo_show_text(cr, s);
+}
+
+// 2xN grip-dot grid for the drag handle.
+static void draw_grip_dots(cairo_t *cr, double x, double y, double w, double h, double R, double G, double B, double A) {
+	const double cx = x + w * 0.5;
+	const double cy = y + h * 0.5;
+	cairo_set_source_rgba(cr, R, G, B, A);
+	for (int col_i = -2; col_i <= 2; col_i++)
+		for (int row_i = -1; row_i <= 1; row_i++) {
+			cairo_arc(cr, cx + col_i * UI_GRIP_STEP, cy + row_i * UI_GRIP_STEP, UI_GRIP_R, 0, 2 * M_PI);
+			cairo_fill(cr);
+		}
+}
+
+// ---- tool icons --------------------------------------------------------------
+
+static void draw_icon(cairo_t *cr, double cx, double cy, tool_type_t type, double R, double G, double B) {
+	cairo_set_source_rgba(cr, R, G, B, 1);
+	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+	switch (type) {
+	case TOOL_SELECT:
+		cairo_rectangle(cr, cx - 8, cy - 8, 16, 16);
+		cairo_set_line_width(cr, 1.5);
+		cairo_stroke(cr);
+		cairo_rectangle(cr, cx - 10, cy - 10, 4, 4); cairo_fill(cr);
+		cairo_rectangle(cr, cx + 6, cy - 10, 4, 4); cairo_fill(cr);
+		cairo_rectangle(cr, cx - 10, cy + 6, 4, 4); cairo_fill(cr);
+		cairo_rectangle(cr, cx + 6, cy + 6, 4, 4); cairo_fill(cr);
+		break;
+	case TOOL_BRUSH:
+		cairo_move_to(cr, cx - 8, cy + 8);
+		cairo_curve_to(cr, cx - 4, cy - 8, cx + 4, cy + 8, cx + 8, cy - 8);
+		cairo_set_line_width(cr, 2.0);
+		cairo_stroke(cr);
+		break;
+	case TOOL_BLUR:
+		cairo_move_to(cr, cx, cy - 8);
+		cairo_line_to(cr, cx - 5, cy + 2);
+		cairo_line_to(cr, cx + 5, cy + 2);
+		cairo_close_path(cr);
+		cairo_fill(cr);
+		cairo_arc(cr, cx, cy + 3, 5, 0, 2 * M_PI);
+		cairo_fill(cr);
+		break;
+	case TOOL_LINE:
+		cairo_move_to(cr, cx - 8, cy + 8);
+		cairo_line_to(cr, cx + 8, cy - 8);
+		cairo_set_line_width(cr, 2.0);
+		cairo_stroke(cr);
+		break;
+	case TOOL_RECTANGLE:
+		cairo_rectangle(cr, cx - 10, cy - 6, 19, 11);
+		cairo_set_line_width(cr, 2.0);
+		cairo_stroke(cr);
+		break;
+	case TOOL_ARROW:
+		cairo_move_to(cr, cx - 8, cy + 8);
+		cairo_line_to(cr, cx + 8, cy - 8);
+		cairo_move_to(cr, cx + 8, cy - 8);
+		cairo_line_to(cr, cx - 2, cy - 8);
+		cairo_move_to(cr, cx + 8, cy - 8);
+		cairo_line_to(cr, cx + 8, cy + 2);
+		cairo_set_line_width(cr, 2.0);
+		cairo_stroke(cr);
+		break;
+	case TOOL_STAMP:
+		cairo_arc(cr, cx, cy, 8, 0, 2 * M_PI);
+		cairo_fill(cr);
+		cairo_set_source_rgba(cr, 0, 0, 0, 0.35);
+		cairo_arc(cr, cx, cy, 8, 0, 2 * M_PI);
+		cairo_set_line_width(cr, 1.5);
+		cairo_stroke(cr);
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		draw_centered_text(cr, cx + 0.5, cy + 1, "1", 12, 1, 1, 1, 1);
+		break;
+	case TOOL_TEXT:
+		cairo_move_to(cr, cx - 7, cy - 7);
+		cairo_line_to(cr, cx + 7, cy - 7);
+		cairo_move_to(cr, cx, cy - 7);
+		cairo_line_to(cr, cx, cy + 8);
+		cairo_set_line_width(cr, 2.0);
+		cairo_stroke(cr);
+		break;
+	case TOOL_LASSO: {
+		double r = 9.0;
+		for (double a = -0.5; a < 5.0; a += 0.8) {
+			cairo_arc(cr, cx + cos(a) * r, cy + sin(a) * (r * 0.7), 1.5, 0, 2 * M_PI);
+			cairo_fill(cr);
+		}
+		cairo_move_to(cr, cx + 8, cy);
+		cairo_line_to(cr, cx + 12, cy + 4);
+		cairo_set_line_width(cr, 1.5);
+		cairo_stroke(cr);
+		break;
+	}
+	case TOOL_COLORPICKER:
+		cairo_arc(cr, cx, cy, 7, 0, 2 * M_PI);
+		cairo_set_line_width(cr, 1.5);
+		cairo_stroke(cr);
+		cairo_move_to(cr, cx - 3, cy);
+		cairo_line_to(cr, cx + 4, cy);
+		cairo_move_to(cr, cx, cy - 3);
+		cairo_line_to(cr, cx, cy + 4);
+		cairo_set_line_width(cr, 1.5);
+		cairo_stroke(cr);
+		cairo_arc(cr, cx + 7, cy + 7, 3, 0, 2 * M_PI);
+		cairo_fill(cr);
+		break;
+	default:
+		break;
+	}
+}
+
+static void draw_icon_button(struct escreen_state *state, cairo_t *cr, ui_rect_t r, tool_type_t type,
+		bool is_active, bool hovered) {
+	escreen_color_t accent = state->config.colors.accent;
+	if (is_active) {
+		fill_rounded(cr, r.x, r.y, r.w, r.h, 4, accent.r, accent.g, accent.b, accent.a);
+	} else if (hovered) {
+		escreen_color_t hv = state->config.colors.button_hover;
+		fill_rounded(cr, r.x, r.y, r.w, r.h, 4, hv.r, hv.g, hv.b, hv.a);
+	}
+	draw_icon(cr, r.x + r.w / 2, r.y + r.h / 2, type, is_active ? 1.0 : 0.72, is_active ? 1.0 : 0.72, is_active ? 1.0 : 0.72);
+}
+
+// ---- option widgets -----------------------------------------------------------
+
+static void draw_slider(struct escreen_state *state, cairo_t *cr, ui_rect_t r, double frac,
+		const char *label, int widget, int hovered, int active) {
+	escreen_color_t accent = state->config.colors.accent;
+	bool hl = hovered == widget || active == widget;
+
+	fill_rounded(cr, r.x, r.y, r.w, r.h, r.h / 2, 0.12, 0.12, 0.12, 1);
+	if (frac > 0.0)
+		fill_rounded(cr, r.x, r.y, r.w * frac, r.h, r.h / 2, accent.r, accent.g, accent.b, accent.a);
+	if (hl)
+		stroke_rounded(cr, r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3, r.h / 2 + 1.5, 1.5, accent.r, accent.g, accent.b, 0.9);
+
+	double knob_x = r.x + frac * r.w;
+	cairo_arc(cr, knob_x, r.y + r.h / 2, 6, 0, 2 * M_PI);
+	cairo_set_source_rgba(cr, 1, 1, 1, 1);
+	cairo_fill_preserve(cr);
+	cairo_set_line_width(cr, 1.5);
+	cairo_set_source_rgba(cr, 0, 0, 0, 0.8);
+	cairo_stroke(cr);
+
+	draw_centered_text(cr, r.x + r.w / 2, r.y + r.h / 2, label, 11, 1, 1, 1, 0.95);
+}
+
+static void draw_checkbox(struct escreen_state *state, cairo_t *cr, ui_rect_t r, bool checked, bool hovered) {
+	escreen_color_t accent = state->config.colors.accent;
+	fill_rounded(cr, r.x, r.y, r.w, r.h, 3, 0.15, 0.15, 0.15, 1);
+	if (checked) {
+		fill_rounded(cr, r.x, r.y, r.w, r.h, 3, accent.r, accent.g, accent.b, 1);
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		cairo_set_line_width(cr, 2);
+		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+		cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+		cairo_move_to(cr, r.x + 3, r.y + r.h / 2);
+		cairo_line_to(cr, r.x + r.w / 2, r.y + r.h - 3);
+		cairo_line_to(cr, r.x + r.w - 2, r.y + 2);
+		cairo_stroke(cr);
+	} else {
+		stroke_rounded(cr, r.x, r.y, r.w, r.h, 3, 1.5, accent.r, accent.g, accent.b, 0.7);
+	}
+	if (hovered)
+		stroke_rounded(cr, r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3, 4, 1.5, accent.r, accent.g, accent.b, 0.9);
+	draw_text(cr, r.x + r.w + 8, r.y + r.h - 3, "Fill", 12, 0.85, 0.85, 0.85, 1);
+}
+
+static void draw_mini_button(cairo_t *cr, ui_rect_t r, bool hovered, escreen_color_t accent, const char *label) {
+	fill_rounded(cr, r.x, r.y, r.w, r.h, 4, 0.15, 0.15, 0.15, 1);
+	if (hovered)
+		fill_rounded(cr, r.x, r.y, r.w, r.h, 4, accent.r, accent.g, accent.b, 0.5);
+	draw_centered_text(cr, r.x + r.w / 2, r.y + r.h / 2 + 0.5, label, 14, 1, 1, 1, 1);
+}
+
+static void draw_stamp_counter(struct escreen_state *state, cairo_t *cr, const ui_layout_t *L, int hovered) {
+	int c = *tool_stamp_get_counter_ptr();
+	escreen_color_t accent = state->config.colors.accent;
+
+	draw_mini_button(cr, L->stamp_minus, hovered == UI_STAMP_MINUS, accent, "-");
+
+	fill_rounded(cr, L->stamp_num.x, L->stamp_num.y, L->stamp_num.w, L->stamp_num.h, 4, 0.15, 0.15, 0.15, 1);
+	stroke_rounded(cr, L->stamp_num.x, L->stamp_num.y, L->stamp_num.w, L->stamp_num.h, 4, 1.5, accent.r, accent.g, accent.b, 0.7);
+	char buf[16];
+	snprintf(buf, sizeof(buf), "%d", c);
+	draw_centered_text(cr, L->stamp_num.x + L->stamp_num.w / 2, L->stamp_num.y + L->stamp_num.h / 2, buf, 13, 1, 1, 1, 1);
+
+	draw_mini_button(cr, L->stamp_plus, hovered == UI_STAMP_PLUS, accent, "+");
+}
+
+static void draw_wheel(struct escreen_state *state, cairo_t *cr, const ui_layout_t *L, int hovered, int active) {
+	double h, s, v;
+	rgb_to_hsv(state->sketching.r, state->sketching.g, state->sketching.b, &h, &s, &v);
+	double hr, hg, hb;
+	hsv_to_rgb(h, 1, 1, &hr, &hg, &hb);
+
+	// SV square: white->pure hue horizontally, multiplied by black->white vertically.
+	{
+		double wx = L->wheel.x, wy = L->wheel.y, ww = L->wheel.w, wh = L->wheel.h;
+		cairo_rectangle(cr, wx, wy, ww, wh);
+		cairo_clip(cr);
+
+		cairo_rectangle(cr, wx, wy, ww, wh);
+		cairo_pattern_t *g1 = cairo_pattern_create_linear(wx, 0, wx + ww, 0);
+		cairo_pattern_add_color_stop_rgba(g1, 0, 1, 1, 1, 1);
+		cairo_pattern_add_color_stop_rgba(g1, 1, hr, hg, hb, 1);
+		cairo_set_source(cr, g1);
+		cairo_fill(cr);
+		cairo_pattern_destroy(g1);
+
+		cairo_rectangle(cr, wx, wy, ww, wh);
+		cairo_pattern_t *g2 = cairo_pattern_create_linear(0, wy, 0, wy + wh);
+		cairo_pattern_add_color_stop_rgba(g2, 0, 1, 1, 1, 1);
+		cairo_pattern_add_color_stop_rgba(g2, 1, 0, 0, 0, 1);
+		cairo_set_operator(cr, CAIRO_OPERATOR_MULTIPLY);
+		cairo_set_source(cr, g2);
+		cairo_fill(cr);
+		cairo_pattern_destroy(g2);
+		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+		cairo_reset_clip(cr);
+
+		cairo_set_line_width(cr, 1);
+		cairo_set_source_rgba(cr, 0, 0, 0, 0.5);
+		cairo_rectangle(cr, wx, wy, ww, wh);
+		cairo_stroke(cr);
+
+		// knob at current (s, v)
+		double kx = wx + s * ww, ky = wy + (1.0 - v) * wh;
+		cairo_arc(cr, kx, ky, 6, 0, 2 * M_PI);
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		cairo_fill_preserve(cr);
+		cairo_set_line_width(cr, 1.5);
+		cairo_set_source_rgba(cr, 0, 0, 0, 0.8);
+		cairo_stroke(cr);
+	}
+
+	// Hue strip (vertical, rainbow).
+	{
+		double hx = L->hue.x, hy = L->hue.y, hw = L->hue.w, hh = L->hue.h;
+		cairo_rectangle(cr, hx, hy, hw, hh);
+		cairo_pattern_t *gp = cairo_pattern_create_linear(0, hy, 0, hy + hh);
+		for (int i = 0; i <= 6; i++) {
+			double R, G, B;
+			hsv_to_rgb(i / 6.0, 1, 1, &R, &G, &B);
+			cairo_pattern_add_color_stop_rgba(gp, i / 6.0, R, G, B, 1);
+		}
+		cairo_set_source(cr, gp);
+		cairo_fill(cr);
+		cairo_pattern_destroy(gp);
+
+		cairo_set_line_width(cr, 1);
+		cairo_set_source_rgba(cr, 0, 0, 0, 0.5);
+		cairo_rectangle(cr, hx, hy, hw, hh);
+		cairo_stroke(cr);
+
+		double iy = hy + h * hh;
+		cairo_set_source_rgba(cr, 1, 1, 1, 1);
+		cairo_rectangle(cr, hx, iy - 1.5, hw, 3);
+		cairo_fill(cr);
+	}
+
+	escreen_color_t accent = state->config.colors.accent;
+	if (hovered == UI_WHEEL || active == UI_WHEEL)
+		stroke_rounded(cr, L->wheel.x - 2, L->wheel.y - 2, L->wheel.w + 4, L->wheel.h + 4, 4, 1.5, accent.r, accent.g, accent.b, 0.9);
+	if (hovered == UI_HUE || active == UI_HUE)
+		stroke_rounded(cr, L->hue.x - 2, L->hue.y - 2, L->hue.w + 4, L->hue.h + 4, 2, 1.5, accent.r, accent.g, accent.b, 0.9);
+}
+
+// ---- tooltip -----------------------------------------------------------------
+
+static const char *ui_tooltip_for(struct escreen_state *state, int widget) {
+	switch (widget) {
+	case UI_HANDLE:         return "Drag to pin\nDouble-click to auto-place";
+	case UI_WHEEL:          return "Color";
+	case UI_HUE:            return "Hue";
+	case UI_SLIDER_THICK:   return "Size";
+	case UI_SLIDER_HARD:    return "Hardness";
+	case UI_CHECKBOX_FILL:  return "Fill";
+	case UI_STAMP_MINUS:    return "Previous number";
+	case UI_STAMP_PLUS:     return "Next number";
+	default:
+		if (widget >= UI_ICON_BASE && widget < UI_ICON_BASE + (int)TOOL_COUNT)
+			return state->sketching.tools[widget - UI_ICON_BASE]->name;
+		return NULL;
+	}
+}
+
+static ui_rect_t ui_rect_of(const ui_layout_t *L, int widget) {
+	if (widget == UI_HANDLE) return L->handle;
+	if (widget >= UI_ICON_BASE && widget < UI_ICON_BASE + (int)TOOL_COUNT) return L->icons[widget - UI_ICON_BASE];
+	if (widget == UI_WHEEL) return L->wheel;
+	if (widget == UI_HUE) return L->hue;
+	if (widget == UI_SLIDER_THICK) return L->sl_thick;
+	if (widget == UI_SLIDER_HARD) return L->sl_hard;
+	if (widget == UI_CHECKBOX_FILL) return L->cb_fill;
+	if (widget == UI_STAMP_MINUS) return L->stamp_minus;
+	if (widget == UI_STAMP_PLUS) return L->stamp_plus;
+	ui_rect_t z = {0, 0, 0, 0};
+	return z;
+}
+
+static void draw_tooltip(struct escreen_state *state, cairo_t *cr, const ui_layout_t *L, int widget) {
+	const char *text = ui_tooltip_for(state, widget);
+	if (!text) return;
+
+	char buf[256];
+	strncpy(buf, text, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = '\0';
+
+	cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+	cairo_set_font_size(cr, 12);
+
+	// Split into lines and find the widest.
+	const double lh = 16.0;
+	double tw = 0.0;
+	int lines = 0;
+	for (char *line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+		cairo_text_extents_t te;
+		cairo_text_extents(cr, line, &te);
+		if (te.width > tw) tw = te.width;
+		lines++;
+	}
+	double pad = 5.0;
+	double tip_w = tw + pad * 2;
+	double tip_h = lines * lh + pad * 2;
+
+	ui_rect_t r = ui_rect_of(L, widget);
+	double tx = r.x + r.w + 8.0;
+	double ty = r.y;
+	double min_x = state->total_min_x + 4, max_x = state->total_max_x - tip_w - 4;
+	double min_y = state->total_min_y + 4, max_y = state->total_max_y - tip_h - 4;
+	if (max_x < min_x) max_x = min_x;
+	if (max_y < min_y) max_y = min_y;
+	if (tx < min_x) tx = min_x;
+	if (tx > max_x) tx = max_x - r.w - 8.0;
+	if (tx < min_x) tx = min_x;
+	if (ty < min_y) ty = min_y;
+	if (ty > max_y) ty = max_y;
+
+	fill_rounded(cr, tx, ty, tip_w, tip_h, 4, 0.05, 0.05, 0.05, 0.9);
+	stroke_rounded(cr, tx, ty, tip_w, tip_h, 4, 1, 1, 1, 1, 0.35);
+
+	double ly = ty + pad + lh - 4.0;
+	strncpy(buf, text, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = '\0';
+	for (char *line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+		draw_text(cr, tx + pad, ly, line, 12, 1, 1, 1, 1);
+		ly += lh;
+	}
+}
+
+// ---- hit-testing & interaction -------------------------------------------------
+
+static int ui_widget_at(struct escreen_state *state, const ui_layout_t *L, double mx, double my) {
+	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+	if (pt_in_rect(L->handle, mx, my)) return UI_HANDLE;
+	for (int t = 0; t < TOOL_COUNT; t++)
+		if (pt_in_rect(L->icons[t], mx, my)) return UI_ICON(t);
+	if (tool->show_color) {
+		if (pt_in_rect(L->hue, mx, my)) return UI_HUE;
+		if (pt_in_rect(L->wheel, mx, my)) return UI_WHEEL;
+	}
+	if (tool->show_thickness && pt_in_rect(L->sl_thick, mx, my)) return UI_SLIDER_THICK;
+	if (tool->show_hardness && pt_in_rect(L->sl_hard, mx, my)) return UI_SLIDER_HARD;
+	if (tool->show_fill && pt_in_rect(L->cb_fill, mx, my)) return UI_CHECKBOX_FILL;
+	if (tool->type == TOOL_STAMP) {
+		if (pt_in_rect(L->stamp_minus, mx, my)) return UI_STAMP_MINUS;
+		if (pt_in_rect(L->stamp_plus, mx, my)) return UI_STAMP_PLUS;
+	}
+	return UI_NONE;
+}
+
+static void ui_slider_set(struct escreen_state *state, const ui_layout_t *L, int widget, double mx) {
+	double frac = clamp01((mx - (widget == UI_SLIDER_THICK ? L->sl_thick.x : L->sl_hard.x)) /
+	                      (widget == UI_SLIDER_THICK ? L->sl_thick.w : L->sl_hard.w));
+	if (widget == UI_SLIDER_THICK) state->sketching.thickness = 1.0 + frac * 99.0;
+	else state->sketching.hardness = frac;
+}
+
+static void ui_wheel_pick(struct escreen_state *state, const ui_layout_t *L, double mx, double my, int widget) {
+	double h, s, v;
+	rgb_to_hsv(state->sketching.r, state->sketching.g, state->sketching.b, &h, &s, &v);
+	if (widget == UI_WHEEL) {
+		s = clamp01((mx - L->wheel.x) / L->wheel.w);
+		v = 1.0 - clamp01((my - L->wheel.y) / L->wheel.h);
+	} else {
+		h = clamp01((my - L->hue.y) / L->hue.h);
+	}
+	hsv_to_rgb(h, s, v, &state->sketching.r, &state->sketching.g, &state->sketching.b);
+}
+
+static void ui_get_mouse(struct escreen_state *state, double *x, double *y) {
+	// Only the first seat drives the toolbar (single-pointer assumption).
+	struct escreen_seat *seat = wl_container_of(state->seats.next, seat, link);
+	*x = seat->x;
+	*y = seat->y;
+}
+
+// ---- main UI entry point -------------------------------------------------------
+
+void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
+	if (!state->sketching.active_tool) return;
+	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+
+	ui_layout_t L;
+	ui_get_current_layout(state, &L);
+
+	double mx, my;
+	ui_get_mouse(state, &mx, &my);
+	int hovered = state->sketching.ui_active ? UI_NONE : ui_widget_at(state, &L, mx, my);
+	int active = state->sketching.ui_active;
+
+	// Background
+	fill_rounded(cr, L.x, L.y, L.w, L.h, 6, state->config.colors.toolbar_bg.r, state->config.colors.toolbar_bg.g, state->config.colors.toolbar_bg.b, state->config.colors.toolbar_bg.a);
+
+	// Drag handle
+	{
+		bool held = state->sketching.toolbar_dragging;
+		bool hl = held || hovered == UI_HANDLE;
+		if (hl)
+			fill_rounded(cr, L.handle.x, L.handle.y, L.handle.w, L.handle.h, 6, 1, 1, 1, held ? 0.16 : 0.08);
+		double a = held ? 0.82 : (hl ? 0.55 : 0.31);
+		draw_grip_dots(cr, L.handle.x, L.handle.y, L.handle.w, L.handle.h, 0.78, 0.78, 0.78, a);
+	}
+
+	// Tool icons
+	for (int t = 0; t < TOOL_COUNT; t++) {
+		bool is_active = (tool == state->sketching.tools[t]);
+		bool hv = hovered == UI_ICON(t);
+		draw_icon_button(state, cr, L.icons[t], (tool_type_t)t, is_active, hv);
+	}
+
+	// Options
+	if (tool->show_color)
+		draw_wheel(state, cr, &L, hovered, active);
+	if (tool->show_thickness) {
+		char label[32];
+		snprintf(label, sizeof(label), "Size: %.0f", state->sketching.thickness);
+		draw_slider(state, cr, L.sl_thick, (state->sketching.thickness - 1.0) / 99.0, label, UI_SLIDER_THICK, hovered, active);
+	}
+	if (tool->show_hardness) {
+		char label[32];
+		snprintf(label, sizeof(label), "Hard: %.2f", state->sketching.hardness);
+		draw_slider(state, cr, L.sl_hard, state->sketching.hardness, label, UI_SLIDER_HARD, hovered, active);
+	}
+	if (tool->show_fill)
+		draw_checkbox(state, cr, L.cb_fill, state->sketching.filled, hovered == UI_CHECKBOX_FILL);
+	if (tool->type == TOOL_STAMP)
+		draw_stamp_counter(state, cr, &L, hovered);
+
+	// Tooltip
+	if (hovered != UI_NONE && active == UI_NONE)
+		draw_tooltip(state, cr, &L, hovered);
+}
+
+bool tools_is_on_toolbar(struct escreen_state *state, double x, double y) {
+	ui_layout_t L;
+	ui_get_current_layout(state, &L);
+	return x >= L.x && x < L.x + L.w && y >= L.y && y < L.y + L.h;
+}
+
+void tools_handle_button(struct escreen_state *state, double x, double y, bool pressed) {
+	tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+
+	if (pressed) {
+		if (tools_is_on_toolbar(state, x, y)) {
+			ui_layout_t L;
+			ui_get_current_layout(state, &L);
+			int w = ui_widget_at(state, &L, x, y);
+
+			if (w == UI_HANDLE) {
+				uint64_t now = ui_get_ms();
+				bool dbl = now - state->sketching.toolbar_last_click_ms < 400 &&
+				           fabs(x - state->sketching.toolbar_last_click_x) < 4 &&
+				           fabs(y - state->sketching.toolbar_last_click_y) < 4;
+				state->sketching.toolbar_last_click_ms = now;
+				state->sketching.toolbar_last_click_x = x;
+				state->sketching.toolbar_last_click_y = y;
+				if (dbl) {
+					state->sketching.toolbar_pinned = false;
+					state->sketching.toolbar_dragging = false;
+					state->sketching.ui_active = UI_NONE;
+				} else {
+					state->sketching.toolbar_dragging = true;
+					state->sketching.toolbar_pinned = true;
+					state->sketching.toolbar_pinned_x = L.x;
+					state->sketching.toolbar_pinned_y = L.y;
+					state->sketching.toolbar_drag_ox = x - L.x;
+					state->sketching.toolbar_drag_oy = y - L.y;
+				}
+			} else if (w >= UI_ICON_BASE && w < UI_ICON_BASE + (int)TOOL_COUNT) {
+				tools_set_active(state, (tool_type_t)(w - UI_ICON_BASE));
+			} else if (w == UI_WHEEL || w == UI_HUE) {
+				state->sketching.ui_active = w;
+				ui_wheel_pick(state, &L, x, y, w);
+			} else if (w == UI_SLIDER_THICK || w == UI_SLIDER_HARD) {
+				state->sketching.ui_active = w;
+				ui_slider_set(state, &L, w, x);
+			} else if (w == UI_CHECKBOX_FILL) {
+				state->sketching.filled = !state->sketching.filled;
+			} else if (w == UI_STAMP_MINUS) {
+				int *c = tool_stamp_get_counter_ptr();
+				if (*c > 1) (*c)--;
+			} else if (w == UI_STAMP_PLUS) {
+				(*tool_stamp_get_counter_ptr())++;
+			}
+			return;
+		}
+
+		// Not on the toolbar: let the active tool have the click.
+		state->sketching.drawing = true;
+		if (tool && tool->on_mousedown) tool->on_mousedown(state, x, y);
+	} else {
+		// Release: end any toolbar interaction first.
+		if (state->sketching.ui_active != UI_NONE || state->sketching.toolbar_dragging) {
+			state->sketching.ui_active = UI_NONE;
+			state->sketching.toolbar_dragging = false;
+			return;
+		}
+		if (state->sketching.drawing && tool && tool->on_mouseup) tool->on_mouseup(state, x, y);
+		state->sketching.drawing = false;
+	}
+}
+
+void tools_handle_motion(struct escreen_state *state, double x, double y) {
+	// Toolbar drag (pinning) and widget drags take priority over the tool.
+	if (state->sketching.toolbar_dragging) {
+		state->sketching.toolbar_pinned_x = x - state->sketching.toolbar_drag_ox;
+		state->sketching.toolbar_pinned_y = y - state->sketching.toolbar_drag_oy;
+		return;
+	}
+
+	int w = state->sketching.ui_active;
+	if (w == UI_WHEEL || w == UI_HUE) {
+		ui_layout_t L;
+		ui_get_current_layout(state, &L);
+		ui_wheel_pick(state, &L, x, y, w);
+		return;
+	}
+	if (w == UI_SLIDER_THICK || w == UI_SLIDER_HARD) {
+		ui_layout_t L;
+		ui_get_current_layout(state, &L);
+		ui_slider_set(state, &L, w, x);
+		return;
+	}
+
+	if (state->sketching.drawing && state->sketching.active_tool && state->sketching.active_tool->on_mousemove) {
+		state->sketching.active_tool->on_mousemove(state, x, y);
+	}
+}
+
+// ---- tool manager ---------------------------------------------------------------
+
+void tools_init(struct escreen_state *state) {
+	state->sketching.tools[TOOL_SELECT]      = &tool_select;
+	state->sketching.tools[TOOL_BRUSH]       = &tool_brush;
+	state->sketching.tools[TOOL_BLUR]        = &tool_blur;
+	state->sketching.tools[TOOL_LINE]        = &tool_line;
+	state->sketching.tools[TOOL_RECTANGLE]   = &tool_rectangle;
+	state->sketching.tools[TOOL_ARROW]       = &tool_arrow;
+	state->sketching.tools[TOOL_STAMP]       = &tool_stamp;
+	state->sketching.tools[TOOL_TEXT]        = &tool_text;
+	state->sketching.tools[TOOL_LASSO]       = &tool_lasso;
+	state->sketching.tools[TOOL_COLORPICKER] = &tool_colorpicker;
+
+	state->sketching.active_tool = state->sketching.tools[TOOL_SELECT];
+	state->sketching.text_buffer[0] = '\0';
+
+	state->sketching.r = 1.0f; state->sketching.g = 0.0f; state->sketching.b = 0.0f; state->sketching.a = 1.0f;
+	state->sketching.thickness = 5.0f;
+	state->sketching.hardness = 0.5f;
+	state->sketching.filled = false;
+	state->sketching.is_vertical = false;
+
+	state->sketching.history_count = 0;
+	state->sketching.history_capacity = 16;
+	state->sketching.history = (action_t*)calloc(state->sketching.history_capacity, sizeof(action_t));
+
+	state->sketching.drawing = false;
+}
+
+void tools_cleanup(struct escreen_state *state) {
+	for (size_t i = 0; i < state->sketching.history_count; i++) {
+		if (state->sketching.history[i].points) free(state->sketching.history[i].points);
+		if (state->sketching.history[i].text) free(state->sketching.history[i].text);
+	}
+	free(state->sketching.history);
+	if (state->sketching.history_layer) {
+		cairo_surface_destroy(state->sketching.history_layer);
+		state->sketching.history_layer = NULL;
+	}
+	if (state->sketching.lasso_points) free(state->sketching.lasso_points);
+}
 
 extern "C" {
 
@@ -631,23 +975,23 @@ void tools_update_history(struct escreen_state *state) {
 		int h = cairo_image_surface_get_height(state->global_capture);
 		state->sketching.history_layer = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
 	}
-	
+
 	if (state->sketching.history_layer) {
 		if (state->sketching.history_rendered_count != state->sketching.history_undo_pos) {
 			cairo_t *lcr = cairo_create(state->sketching.history_layer);
-			
+
 			if (state->sketching.history_undo_pos < state->sketching.history_rendered_count) {
 				cairo_set_operator(lcr, CAIRO_OPERATOR_CLEAR);
 				cairo_paint(lcr);
 				cairo_set_operator(lcr, CAIRO_OPERATOR_OVER);
 				state->sketching.history_rendered_count = 0;
 			}
-			
+
 			// Use max_scale_factor (true physical/logical ratio) — not o->scale which is
 			// always 1 for fractional scaling and would place strokes in the wrong position.
 			cairo_scale(lcr, state->max_scale_factor, state->max_scale_factor);
 			cairo_translate(lcr, -state->total_min_x, -state->total_min_y);
-			
+
 			for (size_t i = state->sketching.history_rendered_count; i < state->sketching.history_undo_pos; i++) {
 				action_t *action = &state->sketching.history[i];
 				state->sketching.tools[action->type]->render_action(state, lcr, action);
@@ -659,7 +1003,7 @@ void tools_update_history(struct escreen_state *state) {
 }
 
 void tools_draw(struct escreen_state *state, cairo_t *cr) {
-	if ((state->sketching.drawing || state->sketching.is_text_editing) && 
+	if ((state->sketching.drawing || state->sketching.is_text_editing) &&
 	    state->sketching.active_tool && state->sketching.active_tool->draw_preview) {
 		state->sketching.active_tool->draw_preview(state, cr);
 	}
@@ -668,36 +1012,7 @@ void tools_draw(struct escreen_state *state, cairo_t *cr) {
 void tools_set_active(struct escreen_state *state, tool_type_t type) {
 	if (type < TOOL_COUNT && state->sketching.active_tool != state->sketching.tools[type]) {
 		state->sketching.active_tool = state->sketching.tools[type];
-		state->sketching.ui_layout_frames = 12; // Force 12 frames to settle ImGui layout across all outputs
-	}
-}
-
-void tools_handle_button(struct escreen_state *state, double x, double y, bool pressed) {
-	ImGuiIO& io = ImGui::GetIO();
-	io.MousePos = ImVec2((float)x, (float)y);
-	io.MouseDown[0] = pressed;
-
-	if (io.WantCaptureMouse) return;
-
-	if (pressed) {
-		state->sketching.drawing = true;
-		if (state->sketching.active_tool && state->sketching.active_tool->on_mousedown) {
-			state->sketching.active_tool->on_mousedown(state, x, y);
-		}
-	} else {
-		if (state->sketching.drawing && state->sketching.active_tool && state->sketching.active_tool->on_mouseup) {
-			state->sketching.active_tool->on_mouseup(state, x, y);
-		}
-		state->sketching.drawing = false;
-	}
-}
-
-void tools_handle_motion(struct escreen_state *state, double x, double y) {
-	ImGuiIO& io = ImGui::GetIO();
-	io.MousePos = ImVec2((float)x, (float)y);
-
-	if (state->sketching.drawing && state->sketching.active_tool && state->sketching.active_tool->on_mousemove) {
-		state->sketching.active_tool->on_mousemove(state, x, y);
+		state->sketching.ui_layout_frames = 12; // Force 12 frames to settle layout across all outputs
 	}
 }
 
