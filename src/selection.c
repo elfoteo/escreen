@@ -576,10 +576,17 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 						tools_handle_button(seat->state, seat->x, seat->y, true);
 					}
 				} else {
-					// Clicked outside, reset
-					seat->has_selection = false;
-					seat->selection_status = SELECTION_NOT_STARTED;
-					update_dirty_outputs(seat);
+					// Clicked outside the selection: only the select tool (or
+					// no tool) starts a fresh selection; every other tool keeps
+					// working across the boundary instead of dropping it.
+					tool_interface_t *tool = (tool_interface_t*)seat->state->sketching.active_tool;
+					if (tool == NULL || tool->type == TOOL_SELECT) {
+						seat->has_selection = false;
+						seat->selection_status = SELECTION_NOT_STARTED;
+						update_dirty_outputs(seat);
+					} else {
+						tools_handle_button(seat->state, seat->x, seat->y, true);
+					}
 				}
 			}
 		} else if (button == BTN_RIGHT) {

@@ -125,6 +125,7 @@ static config_entry_t config_entries[] = {
 void config_init(struct escreen_state *state) {
 	// Defaults
 	state->config.auto_save_enabled = false;
+	state->config.auto_save_format = strdup("png");
 	const char *home = getenv("HOME");
 	char buf[512];
 	if (home) {
