@@ -31,7 +31,7 @@ PROTOCOL_SOURCES = \
 	$(BUILD_DIR)/xdg-shell-client-protocol.c \
 	$(BUILD_DIR)/wlr-data-control-unstable-v1-client-protocol.c
 
-SOURCES = $(SRC_DIR)/escreen.c $(SRC_DIR)/selection.c $(SRC_DIR)/freeze.c $(SRC_DIR)/image.c $(SRC_DIR)/clipboard.c \
+SOURCES = $(SRC_DIR)/escreen.c $(SRC_DIR)/selection.c $(SRC_DIR)/freeze.c $(SRC_DIR)/image.c $(SRC_DIR)/clipboard.c $(SRC_DIR)/config.c \
           $(SRC_DIR)/tool_brush.cpp $(SRC_DIR)/tool_blur.cpp $(SRC_DIR)/tool_line.cpp $(SRC_DIR)/tool_rect.cpp $(SRC_DIR)/tool_arrow.cpp $(SRC_DIR)/tool_stamp.cpp $(SRC_DIR)/tool_text.cpp $(SRC_DIR)/tool_lasso.cpp $(SRC_DIR)/tool_colorpicker.cpp \
           $(SRC_DIR)/tools.cpp
 OBJECTS = $(BUILD_DIR)/escreen.o $(BUILD_DIR)/selection.o $(BUILD_DIR)/freeze.o $(BUILD_DIR)/image.o $(BUILD_DIR)/clipboard.o $(BUILD_DIR)/config.o \
