@@ -195,6 +195,7 @@ static void brush_on_draw_cursor_preview(struct escreen_state *state, cairo_t *c
 tool_interface_t tool_brush = {
 	.name = "Brush",
 	.type = TOOL_BRUSH,
+	.shortcut = 'B',
 	.show_color = true,
 	.show_thickness = true,
 	.show_hardness = true,

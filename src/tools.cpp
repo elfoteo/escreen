@@ -21,6 +21,7 @@ int* tool_stamp_get_counter_ptr();
 tool_interface_t tool_select = {
 	"Select Area",
 	TOOL_SELECT,
+	0,                      // shortcut
 	false, false, false, false, // UI flags: color, thickness, hardness, fill
 	NULL, NULL, NULL, NULL, NULL, NULL // Callbacks including on_draw_preview
 };
@@ -80,6 +81,7 @@ typedef struct {
 	ui_rect_t sl_thick, sl_hard;    // sliders
 	ui_rect_t cb_fill;              // fill checkbox
 	ui_rect_t stamp_minus, stamp_num, stamp_plus;
+	ui_rect_t shortcuts[TOOL_COUNT];  // shortcut key boxes per tool type
 } ui_layout_t;
 
 // Widget ids, shared between drawing and hit-testing.
@@ -94,6 +96,7 @@ enum {
 	UI_CHECKBOX_FILL,
 	UI_STAMP_MINUS,
 	UI_STAMP_PLUS,
+	UI_SHORTCUT_BASE,    // + shortcut index (0..7)
 };
 #define UI_ICON(type) (UI_ICON_BASE + (int)(type))
 
@@ -114,6 +117,7 @@ static const double UI_SLIDER_W = 120.0;
 static const double UI_SLIDER_H = 16.0;
 static const double UI_CB       = 14.0;
 static const double UI_STAMP_H  = 24.0;
+static const double UI_SC       = 20.0;   // shortcut key box size
 
 static bool pt_in_rect(ui_rect_t r, double x, double y) {
 	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
@@ -132,15 +136,26 @@ static void ui_compute_layout(struct escreen_state *state, bool vertical, ui_lay
 	double max_x = UI_PAD, max_y = UI_HANDLE_H + UI_PAD;
 
 	if (vertical) {
-		// Icon column on the left, options to the right.
+		// Icons in the middle, options to the RIGHT.
+		double icon_x = UI_PAD;
+		double ox = icon_x + UI_ICON_S + 8.0;
+
+		y = UI_HANDLE_H + UI_PAD;
 		for (int t = 0; t < TOOL_COUNT; t++) {
-			L->icons[t] = (ui_rect_t){UI_PAD, y, UI_ICON_S, UI_ICON_S};
+			L->icons[t] = (ui_rect_t){icon_x, y, UI_ICON_S, UI_ICON_S};
 			y += UI_ICON_S + UI_GAP;
 		}
 		max_y = fmax(max_y, y - UI_GAP);
-		max_x = fmax(max_x, UI_PAD + UI_ICON_S);
+		max_x = fmax(max_x, ox);
 
-		double ox = UI_PAD + UI_ICON_S + 8.0;
+		// Shortcuts to the LEFT of their icons, vertically aligned.
+		for (int t = 0; t < TOOL_COUNT; t++) {
+			if (!state->sketching.tools[t]->shortcut) continue;
+			double sc_x = icon_x - UI_SC - 6.0;
+			double sc_y = L->icons[t].y + (UI_ICON_S - UI_SC) / 2.0;
+			L->shortcuts[t] = (ui_rect_t){sc_x, sc_y, UI_SC, UI_SC};
+		}
+
 		y = UI_HANDLE_H + UI_PAD;
 		if (color) {
 			L->wheel = (ui_rect_t){ox, y, UI_SV, UI_SV};
@@ -160,22 +175,33 @@ static void ui_compute_layout(struct escreen_state *state, bool vertical, ui_lay
 		}
 		max_y = fmax(max_y, y - 8.0);
 	} else {
-		// Icon row on top, options to the right / below.
+		// Icons in the middle, options BELOW.
+		double icon_y = UI_HANDLE_H + UI_PAD;
+
+		x = UI_PAD;
 		for (int t = 0; t < TOOL_COUNT; t++) {
-			L->icons[t] = (ui_rect_t){x, y, UI_ICON_S, UI_ICON_S};
+			L->icons[t] = (ui_rect_t){x, icon_y, UI_ICON_S, UI_ICON_S};
 			x += UI_ICON_S + UI_GAP;
 		}
 		max_x = fmax(max_x, x - UI_GAP);
-		max_y = fmax(max_y, y + UI_ICON_S);
+		max_y = fmax(max_y, icon_y + UI_ICON_S);
 
+		// Shortcuts ABOVE their icons, horizontally aligned.
+		for (int t = 0; t < TOOL_COUNT; t++) {
+			if (!state->sketching.tools[t]->shortcut) continue;
+			double sc_x = L->icons[t].x + (UI_ICON_S - UI_SC) / 2.0;
+			double sc_y = icon_y - UI_SC - 6.0;
+			L->shortcuts[t] = (ui_rect_t){sc_x, sc_y, UI_SC, UI_SC};
+		}
+
+		double oy = icon_y + UI_ICON_S + 8.0;
 		if (color) {
-			L->wheel = (ui_rect_t){x, y, UI_SV, UI_SV};
-			L->hue   = (ui_rect_t){x + UI_SV + 4.0, y, UI_HUE_W, UI_SV};
+			L->wheel = (ui_rect_t){x, icon_y, UI_SV, UI_SV};
+			L->hue   = (ui_rect_t){x + UI_SV + 4.0, icon_y, UI_HUE_W, UI_SV};
 			x += UI_SV + 4.0 + UI_HUE_W + 8.0;
 			max_x = fmax(max_x, x - 8.0);
-			max_y = fmax(max_y, y + UI_SV);
+			max_y = fmax(max_y, icon_y + UI_SV);
 		}
-		double oy = y;
 		if (thick) { L->sl_thick = (ui_rect_t){x, oy, UI_SLIDER_W, UI_SLIDER_H}; oy += UI_SLIDER_H + 8.0; max_x = fmax(max_x, x + UI_SLIDER_W); }
 		if (hard)  { L->sl_hard  = (ui_rect_t){x, oy, UI_SLIDER_W, UI_SLIDER_H}; oy += UI_SLIDER_H + 8.0; }
 		if (fill)  { L->cb_fill  = (ui_rect_t){x, oy, UI_CB, UI_CB}; oy += UI_CB + 8.0; }
@@ -189,6 +215,15 @@ static void ui_compute_layout(struct escreen_state *state, bool vertical, ui_lay
 		max_y = fmax(max_y, oy - 8.0);
 	}
 
+	// Expand total size to include shortcut overhang.
+	for (int t = 0; t < TOOL_COUNT; t++) {
+		if (!state->sketching.tools[t]->shortcut) continue;
+		double r = L->shortcuts[t].x + L->shortcuts[t].w;
+		double b = L->shortcuts[t].y + L->shortcuts[t].h;
+		if (r > max_x) max_x = r;
+		if (b > max_y) max_y = b;
+	}
+
 	L->w = max_x + UI_PAD;
 	L->h = max_y + UI_PAD;
 	double hh = UI_HANDLE_H - UI_HANDLE_MARG * 2.0;
@@ -199,6 +234,7 @@ static void ui_layout_translate(ui_layout_t *L, double dx, double dy) {
 	L->x = dx; L->y = dy;
 	L->handle.x += dx; L->handle.y += dy;
 	for (int t = 0; t < TOOL_COUNT; t++) { L->icons[t].x += dx; L->icons[t].y += dy; }
+	for (int t = 0; t < TOOL_COUNT; t++) { L->shortcuts[t].x += dx; L->shortcuts[t].y += dy; }
 	L->wheel.x += dx; L->wheel.y += dy;
 	L->hue.x += dx; L->hue.y += dy;
 	L->sl_thick.x += dx; L->sl_thick.y += dy;
@@ -656,6 +692,15 @@ static const char *ui_tooltip_for(struct escreen_state *state, int widget) {
 	default:
 		if (widget >= UI_ICON_BASE && widget < UI_ICON_BASE + (int)TOOL_COUNT)
 			return state->sketching.tools[widget - UI_ICON_BASE]->name;
+		if (widget >= UI_SHORTCUT_BASE && widget < UI_SHORTCUT_BASE + (int)TOOL_COUNT) {
+			int t = widget - UI_SHORTCUT_BASE;
+			tool_interface_t *tool = state->sketching.tools[t];
+			if (tool && tool->shortcut) {
+				static char tip[32];
+				snprintf(tip, sizeof(tip), "%c - %s", tool->shortcut, tool->name);
+				return tip;
+			}
+		}
 		return NULL;
 	}
 }
@@ -663,6 +708,7 @@ static const char *ui_tooltip_for(struct escreen_state *state, int widget) {
 static ui_rect_t ui_rect_of(const ui_layout_t *L, int widget) {
 	if (widget == UI_HANDLE) return L->handle;
 	if (widget >= UI_ICON_BASE && widget < UI_ICON_BASE + (int)TOOL_COUNT) return L->icons[widget - UI_ICON_BASE];
+	if (widget >= UI_SHORTCUT_BASE && widget < UI_SHORTCUT_BASE + (int)TOOL_COUNT) return L->shortcuts[widget - UI_SHORTCUT_BASE];
 	if (widget == UI_WHEEL) return L->wheel;
 	if (widget == UI_HUE) return L->hue;
 	if (widget == UI_SLIDER_THICK) return L->sl_thick;
@@ -731,6 +777,8 @@ static int ui_widget_at(struct escreen_state *state, const ui_layout_t *L, doubl
 	if (pt_in_rect(L->handle, mx, my)) return UI_HANDLE;
 	for (int t = 0; t < TOOL_COUNT; t++)
 		if (pt_in_rect(L->icons[t], mx, my)) return UI_ICON(t);
+	for (int t = 0; t < TOOL_COUNT; t++)
+		if (state->sketching.tools[t]->shortcut && pt_in_rect(L->shortcuts[t], mx, my)) return UI_SHORTCUT_BASE + t;
 	if (tool->show_color) {
 		if (pt_in_rect(L->hue, mx, my)) return UI_HUE;
 		if (pt_in_rect(L->wheel, mx, my)) return UI_WHEEL;
@@ -805,6 +853,26 @@ void tools_draw_ui(struct escreen_state *state, cairo_t *cr) {
 		draw_icon_button(state, cr, L.icons[t], (tool_type_t)t, is_active, hv);
 	}
 
+	// Shortcut keys
+	for (int t = 0; t < TOOL_COUNT; t++) {
+		if (!state->sketching.tools[t]->shortcut) continue;
+		bool is_active = (tool->type == (tool_type_t)t);
+		bool hv = hovered == UI_SHORTCUT_BASE + t;
+		ui_rect_t r = L.shortcuts[t];
+
+		if (is_active) {
+			fill_rounded(cr, r.x, r.y, r.w, r.h, 3, state->config.colors.accent.r, state->config.colors.accent.g, state->config.colors.accent.b, state->config.colors.accent.a);
+		} else if (hv) {
+			fill_rounded(cr, r.x, r.y, r.w, r.h, 3, state->config.colors.button_hover.r, state->config.colors.button_hover.g, state->config.colors.button_hover.b, state->config.colors.button_hover.a);
+		} else {
+			fill_rounded(cr, r.x, r.y, r.w, r.h, 3, 0.15, 0.15, 0.15, 1);
+		}
+
+		char key_str[2] = {state->sketching.tools[t]->shortcut, '\0'};
+		draw_centered_text(cr, r.x + r.w / 2, r.y + r.h / 2, key_str, 11,
+			is_active ? 1.0 : 0.72, is_active ? 1.0 : 0.72, is_active ? 1.0 : 0.72, 1.0);
+	}
+
 	// Options
 	if (tool->show_color)
 		draw_wheel(state, cr, &L, hovered, active);
@@ -865,6 +933,9 @@ void tools_handle_button(struct escreen_state *state, double x, double y, bool p
 				}
 			} else if (w >= UI_ICON_BASE && w < UI_ICON_BASE + (int)TOOL_COUNT) {
 				tools_set_active(state, (tool_type_t)(w - UI_ICON_BASE));
+			} else if (w >= UI_SHORTCUT_BASE && w < UI_SHORTCUT_BASE + (int)TOOL_COUNT) {
+				int t = w - UI_SHORTCUT_BASE;
+				tools_set_active(state, (tool_type_t)t);
 			} else if (w == UI_WHEEL || w == UI_HUE) {
 				state->sketching.ui_active = w;
 				ui_wheel_pick(state, &L, x, y, w);
@@ -1140,6 +1211,33 @@ void tools_handle_key(struct escreen_state *state, uint32_t sym, const char *utf
 			*pos += utf8_len;
 		}
 	}
+}
+
+bool tools_handle_shortcut_key(struct escreen_state *state, uint32_t sym) {
+	char key = '\0';
+	if (sym >= XKB_KEY_a && sym <= XKB_KEY_z) {
+		key = sym - XKB_KEY_a + 'A';
+	} else if (sym >= XKB_KEY_A && sym <= XKB_KEY_Z) {
+		key = sym - XKB_KEY_A + 'A';
+	}
+
+	if (key == 'F') {
+		tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
+		if (tool && tool->show_fill) {
+			state->sketching.filled = !state->sketching.filled;
+			return true;
+		}
+		return false;
+	}
+
+	for (int t = 0; t < TOOL_COUNT; t++) {
+		if (state->sketching.tools[t]->shortcut == key) {
+			tools_set_active(state, (tool_type_t)t);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 } // extern "C"

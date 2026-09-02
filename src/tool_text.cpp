@@ -134,6 +134,7 @@ static void text_on_draw_preview(struct escreen_state *state, cairo_t *cr, doubl
 tool_interface_t tool_text = {
 	.name = "Text",
 	.type = TOOL_TEXT,
+	.shortcut = 'T',
 	.show_color = true,
 	.show_thickness = true,
 	.show_hardness = false,

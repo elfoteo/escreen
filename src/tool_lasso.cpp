@@ -125,6 +125,7 @@ static void lasso_on_draw_preview(struct escreen_state *state, cairo_t *cr, doub
 tool_interface_t tool_lasso = {
 	.name = "Lasso Select",
 	.type = TOOL_LASSO,
+	.shortcut = 0,
 	.show_color = false,
 	.show_thickness = false,
 	.show_hardness = false,

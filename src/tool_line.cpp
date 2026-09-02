@@ -62,6 +62,7 @@ static void line_on_draw_preview(struct escreen_state *state, cairo_t *cr, doubl
 tool_interface_t tool_line = {
 	.name = "Line",
 	.type = TOOL_LINE,
+	.shortcut = 'L',
 	.show_color = true,
 	.show_thickness = true,
 	.show_hardness = false,

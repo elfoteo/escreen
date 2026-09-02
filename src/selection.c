@@ -643,6 +643,17 @@ static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time, 
 				update_dirty_outputs(seat);
 			}
 		}
+	} else if (seat->xkb.state && xkb_state_mod_name_is_active(seat->xkb.state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE)) {
+		if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+			tool_interface_t *tool = (tool_interface_t*)seat->state->sketching.active_tool;
+			if (tool && tool->show_hardness) {
+				double v = wl_fixed_to_double(value);
+				seat->state->sketching.hardness -= v * 0.01;
+				if (seat->state->sketching.hardness < 0.0) seat->state->sketching.hardness = 0.0;
+				if (seat->state->sketching.hardness > 1.0) seat->state->sketching.hardness = 1.0;
+				update_dirty_outputs(seat);
+			}
+		}
 	}
 }
 
@@ -746,6 +757,8 @@ static void keyboard_key(void *data, struct wl_keyboard *keyboard,
 			seat->state->sketching.history_undo_pos++;
 			update_dirty_outputs(seat);
 		}
+	} else if (tools_handle_shortcut_key(seat->state, sym)) {
+		update_dirty_outputs(seat);
 	}
 }
 

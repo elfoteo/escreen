@@ -197,6 +197,7 @@ static void colorpicker_on_draw_preview(struct escreen_state *state,
 tool_interface_t tool_colorpicker = {
 	.name           = "Color Picker",
 	.type           = TOOL_COLORPICKER,
+	.shortcut       = 'C',
 	.show_color     = true,
 	.show_thickness = false,
 	.show_hardness  = false,

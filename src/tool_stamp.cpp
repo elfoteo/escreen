@@ -103,6 +103,7 @@ static void stamp_on_draw_preview(struct escreen_state *state, cairo_t *cr, doub
 tool_interface_t tool_stamp = {
 	.name = "Stamps",
 	.type = TOOL_STAMP,
+	.shortcut = 'S',
 	.show_color = true,
 	.show_thickness = true,
 	.show_hardness = false,

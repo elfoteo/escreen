@@ -264,6 +264,7 @@ static void blur_on_draw_preview(struct escreen_state *state, cairo_t *cr, doubl
 tool_interface_t tool_blur = {
 	.name = "Blur",
 	.type = TOOL_BLUR,
+	.shortcut = 'Q',
 	.show_color = false,
 	.show_thickness = true,
 	.show_hardness = true,

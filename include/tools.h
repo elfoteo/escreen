@@ -52,6 +52,7 @@ typedef struct {
 struct tool {
 	const char *name;
 	tool_type_t type;
+	char shortcut;       // keyboard shortcut key (0 = none)
 	
 	bool show_color;
 	bool show_thickness;
@@ -95,6 +96,8 @@ bool tools_is_on_toolbar(struct escreen_state *state, double x, double y);
 
 void tools_add_action(struct escreen_state *state, action_t action);
 void tools_handle_key(struct escreen_state *state, uint32_t sym, const char *utf8, bool shift_down, bool ctrl_down);
+
+bool tools_handle_shortcut_key(struct escreen_state *state, uint32_t sym);
 
 #ifdef __cplusplus
 }

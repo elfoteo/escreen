@@ -65,6 +65,7 @@ static void rect_render_action(struct escreen_state *state, cairo_t *cr, action_
 tool_interface_t tool_rectangle = {
 	.name = "Rectangle",
 	.type = TOOL_RECTANGLE,
+	.shortcut = 'R',
 	.show_color = true,
 	.show_thickness = true,
 	.show_hardness = false,

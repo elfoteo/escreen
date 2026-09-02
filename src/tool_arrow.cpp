@@ -82,6 +82,7 @@ static void arrow_on_draw_preview(struct escreen_state *state, cairo_t *cr, doub
 tool_interface_t tool_arrow = {
 	.name = "Arrow",
 	.type = TOOL_ARROW,
+	.shortcut = 'A',
 	.show_color = true,
 	.show_thickness = true,
 	.show_hardness = false,
