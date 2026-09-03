@@ -1221,6 +1221,8 @@ bool tools_handle_shortcut_key(struct escreen_state *state, uint32_t sym) {
 		key = sym - XKB_KEY_A + 'A';
 	}
 
+	if (key == '\0') return false;
+
 	if (key == 'F') {
 		tool_interface_t *tool = (tool_interface_t*)state->sketching.active_tool;
 		if (tool && tool->show_fill) {
