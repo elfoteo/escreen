@@ -530,6 +530,16 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 				default: break;
 			}
 		}
+
+		// Never let a resize (right-click corner drag, or handle drag) push the
+		// selection outside the screen bounds.
+		if (box->x < state->total_min_x) box->x = state->total_min_x;
+		if (box->y < state->total_min_y) box->y = state->total_min_y;
+		if (box->x + box->width > state->total_max_x) box->width = state->total_max_x - box->x;
+		if (box->y + box->height > state->total_max_y) box->height = state->total_max_y - box->y;
+		if (box->width < 0) box->width = 0;
+		if (box->height < 0) box->height = 0;
+
 		update_dirty_outputs(seat);
 	} else if (seat->selection_status == SELECTION_EDITING) {
 		tools_handle_motion(state, seat->x, seat->y);
